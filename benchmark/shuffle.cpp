@@ -116,7 +116,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     network->sync();
     StatsPoint init_start(*network);
-    auto circ = generateCircuit(network, nP, pid, vec_size, iter).orderGatesByLevel();
+    auto circ = generateCircuit(network, nP, pid, vec_size).orderGatesByLevel();
     network->sync();
     StatsPoint init_end(*network);
 
@@ -132,7 +132,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     std::cout << "Starting preprocessing" << std::endl;
     StatsPoint preproc_start(*network);
-    emp::PRG prg(&emp::zero_block, seed);
+    // emp::PRG prg(&emp::zero_block, seed);
     OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed);
     auto preproc = off_eval.run(input_pid_map);
     std::cout << "Preprocessing complete" << std::endl;
