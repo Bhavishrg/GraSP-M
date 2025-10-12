@@ -62,7 +62,7 @@ class OfflineEvaluator {
   // Set masks for each wire. Should be called before running any of the other
   // subprotocols.
   void setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map,
-                         std::vector<Ring>& rand_sh_sec, std::vector<BoolRing>& b_rand_sh_sec,
+                         std::vector<Ring>& rand_sh_sec,
                          std::vector<std::vector<Ring>>& delta_sh);
 
   void setWireMasks(const std::unordered_map<common::utils::wire_t, int>& input_pid_map);
@@ -73,22 +73,4 @@ class OfflineEvaluator {
   PreprocCircuit<Ring> run(const std::unordered_map<common::utils::wire_t, int>& input_pid_map);
 };
 
-class OfflineBoolEvaluator {
-  int nP_;  
-  int id_;
-  RandGenPool rgen_;
-  std::shared_ptr<io::NetIOMP> network_;
-  common::utils::LevelOrderedCircuit circ_;
-  PreprocCircuit<BoolRing> preproc_;
-
-  public:
-  OfflineBoolEvaluator(int nP, int my_id, std::shared_ptr<io::NetIOMP> network,
-                       common::utils::LevelOrderedCircuit circ, int seed = 200);
-
-  static void randomShare(int nP, int pid, RandGenPool& rgen, AddShare<BoolRing>& share, TPShare<BoolRing>& tpShare);
-
-  static void randomShareSecret(int nP, int pid, RandGenPool& rgen,
-                                AddShare<BoolRing>& share, TPShare<BoolRing>& tpShare, BoolRing secret,
-                                std::vector<BoolRing>& rand_sh_sec, size_t& idx_rand_sh_sec);
-};
 };  // namespace graphdb
