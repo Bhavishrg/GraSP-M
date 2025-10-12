@@ -9,7 +9,7 @@
 
 // #include "../utils/helpers.h"
 
-namespace emgraph {
+namespace graphdb {
 OfflineEvaluator::OfflineEvaluator(int nP, int my_id,
                                    std::shared_ptr<io::NetIOMP> network,
                                    common::utils::LevelOrderedCircuit circ,
@@ -836,4 +836,4 @@ void OfflineBoolEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
     }
   }
 }
-};  // namespace emgraph
+};  // namespace graphdb

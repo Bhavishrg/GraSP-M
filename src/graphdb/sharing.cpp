@@ -1,6 +1,6 @@
 #include "sharing.h"
 
-namespace emgraph {
+namespace graphdb {
 //check the correctness of the following functions: 
 template <>
 void AddShare<BoolRing>::randomize(emp::PRG& prg) {
@@ -34,4 +34,4 @@ void TPShare<BoolRing>::randomize(emp::PRG& prg) {
     share_elements[i] = values[i];
   }
 }*/
-};  // namespace emgraph
+};  // namespace graphdb

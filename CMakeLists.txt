@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 # Set the project name and version
-project(EmGraph VERSION 0.1)
+project(GraphDB VERSION 0.1)
 
 # Specify the C++ standard
 set(CMAKE_CXX_STANDARD 17)

@@ -1,6 +1,6 @@
-# EmGraph
+# GraphDB
 
-This directory contains the implementation of the EmGraph secure graph analysis protocol.
+This directory contains the implementation of the secure graph database protocol.
 The protocol is implemented in C++17 and [CMake](https://cmake.org/) is used as the build system.
 
 ## External Dependencies
@@ -17,16 +17,16 @@ All required dependencies to compile and run the project are available through t
 To build and run the docker image, execute the following commands from the root directory of the repository:
 
 ```sh
-# Build the EmGraph Docker image.
+# Build the GraphDB Docker image.
 #
 # Building the Docker image requires at least 4GB RAM. This needs to be set 
 # explicitly in case of Windows and MacOS.
-docker build -t emgraph .
+docker build -t graphdb .
 
 # Create and run a container.
 #
 # This should start the shell from within the container.
-docker run -it -v $PWD:/code emgraph
+docker run -it -v $PWD:/code graphdb
 
 # The following command changes the working directory to the one containing the 
 # source code and should be run on the shell started using the previous command.

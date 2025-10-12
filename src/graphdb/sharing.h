@@ -10,7 +10,7 @@
 
 using namespace common::utils;
 
-namespace emgraph {
+namespace graphdb {
 
 template <class R>
 class AddShare {
@@ -336,4 +336,4 @@ struct DummyShare {
 
 //template <>
 //void TPShare<BoolRing>::randomize(emp::PRG& prg);
-};  // namespace emgraph
+};  // namespace graphdb

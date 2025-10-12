@@ -1,6 +1,6 @@
 #define BOOST_TEST_MODULE rand
 #include <emp-tool/emp-tool.h>
-#include <emgraph/rand_gen_pool.h>
+#include <graphdb/rand_gen_pool.h>
 
 #include <boost/test/data/monomorphic.hpp>
 #include <boost/test/data/test_case.hpp>
@@ -8,7 +8,7 @@
 #include <map>
 #include <random>
 
-using namespace emgraph;
+using namespace graphdb;
 
 namespace bdata = boost::unit_test::data;
 
@@ -20,11 +20,11 @@ BOOST_AUTO_TEST_CASE(matching_output) {
     const int num_tests = 10;
     uint64_t seed = 200;
     int nP = 4;
-    auto rpool_0 = emgraph::RandGenPool(0, nP+1, seed);
+    auto rpool_0 = graphdb::RandGenPool(0, nP+1, seed);
     uint64_t b0;
     
    for (int i = 1; i <= nP; ++i) {
-        auto rpool_i = emgraph::RandGenPool(i, nP+1, seed);
+        auto rpool_i = graphdb::RandGenPool(i, nP+1, seed);
         
 
         uint64_t bi;
@@ -37,7 +37,7 @@ BOOST_AUTO_TEST_CASE(matching_output) {
         rpool_i.all().random_data(&bi, sizeof(uint64_t));
         
         for(int j = 1; j < i; j++)  {
-            auto rpool_j = emgraph::RandGenPool(j, nP+1, seed);
+            auto rpool_j = graphdb::RandGenPool(j, nP+1, seed);
             uint64_t bj;
             rpool_j.all().random_data(&bj, sizeof(uint64_t));
             
@@ -48,7 +48,7 @@ BOOST_AUTO_TEST_CASE(matching_output) {
         rpool_i.all_minus_0().random_data(&bi, sizeof(uint64_t));
         
         for(int j = 0; j < i; j++)  {
-            auto rpool_j = emgraph::RandGenPool(j, nP+1, seed);
+            auto rpool_j = graphdb::RandGenPool(j, nP+1, seed);
             uint64_t bj;
             rpool_j.all_minus_0().random_data(&bj, sizeof(uint64_t));
             // CHECK ALL

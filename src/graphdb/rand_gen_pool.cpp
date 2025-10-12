@@ -4,7 +4,7 @@
 
 #include "../utils/helpers.h"
 
-namespace emgraph {
+namespace graphdb {
 
   RandGenPool::RandGenPool(int my_id, int num_parties, int num_clients, uint64_t seed) 
     : id_{my_id}, k_pi(num_parties + 1) { 
@@ -41,4 +41,4 @@ emp::PRG& RandGenPool::all_minus_0() { return k_all_minus_0; }
 emp::PRG& RandGenPool::p0() { return k_p0; }
 
 emp::PRG& RandGenPool::pi(int i) { return k_pi[i]; }
-}  // namespace emgraph
+}  // namespace graphdb

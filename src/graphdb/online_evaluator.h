@@ -13,7 +13,7 @@
 
 using namespace common::utils;
 
-namespace emgraph {
+namespace graphdb {
   class OnlineEvaluator {
     int nP_;
     int id_;
@@ -91,4 +91,4 @@ namespace emgraph {
 
     std::vector<std::vector<BoolRing>> getOutputShares();
   };
-}; // namespace emgraph
+}; // namespace graphdb
