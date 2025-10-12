@@ -16,36 +16,21 @@ using namespace emgraph;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
+common::utils::Circuit<Ring> generateCircuit(int nP, int pid) {
 
     std::cout << "Generating circuit" << std::endl;
-
-    std::vector<std::vector<int>> permutation;
-    std::vector<int> tmp_perm(vec_size);
-    for (int i = 0; i < vec_size; ++i) {
-        tmp_perm[i] = i;
-    }
-    permutation.push_back(tmp_perm);
-    if (pid == 0) {
-        for (int i = 1; i < nP; ++i) {
-            permutation.push_back(tmp_perm);
-        }
-    }
     
     common::utils::Circuit<Ring> circ;
 
-    std::vector<common::utils::wire_t> input_vector(vec_size);
+    std::vector<common::utils::wire_t> input_vector(2);
     std::generate(input_vector.begin(), input_vector.end(), [&]() { return circ.newInputWire(); });
 
 
     // shuffle
-    auto tmp = circ.addMGate(common::utils::GateType::kShuffle, input_vector, permutation);
-    std::vector<common::utils::wire_t> output_vector(vec_size);
-    for (int i = 0; i < vec_size; ++i){
-        output_vector[i] = tmp[i];
-        circ.setAsOutput(output_vector[i]);
-    }
-    
+    auto out = circ.addGate(common::utils::GateType::kMul, input_vector[0], input_vector[1]);
+
+    circ.setAsOutput(out);
+
     return circ;
 }
 
@@ -59,7 +44,6 @@ void benchmark(const bpo::variables_map& opts) {
     }
 
     auto nP = opts["num-parties"].as<int>();
-    auto vec_size = opts["vec-size"].as<size_t>();
     auto iter = opts["iter"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
@@ -97,7 +81,6 @@ void benchmark(const bpo::variables_map& opts) {
 
     json output_data;
     output_data["details"] = {{"num_parties", nP},
-                              {"vec_size", vec_size},
                               {"iterations", iter},
                               {"latency (ms)", latency},
                               {"pid", pid},
@@ -118,7 +101,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     network->sync();
 
-    auto circ = generateCircuit(nP, pid, vec_size).orderGatesByLevel();
+    auto circ = generateCircuit(nP, pid).orderGatesByLevel();
     network->sync();
 
 
@@ -204,7 +187,6 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("vec-size,v", bpo::value<size_t>()->required(), "Number of gates at each level.")
         ("iter,i", bpo::value<int>()->default_value(1), "Number of iterations for message passing.")
         ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")

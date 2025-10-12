@@ -43,7 +43,7 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 
 # The two main targets are 'benchmarks' and 'tests' corresponding to
 # binaries used to run benchmarks and unit tests respectively.
-make <target>
+make benchmarks
 ```
 
 ## Usage

@@ -222,7 +222,7 @@ struct PreprocPermAndShGate : public PreprocGate<R> {
   std::vector<TPShare<R>> tp_a; // Randomly sampled vector
   std::vector<AddShare<R>> b; // Randomly sampled vector
   std::vector<TPShare<R>> tp_b; // Randomly sampled vector
-  std::vector<AddShare<R>> delta; // Delta vector only held by the last party. Dummy values for the other parties
+  std::vector<AddShare<R>> delta; // Delta vector only held by the owner party. Dummy values for the other parties
   std::vector<int> pi; // Randomly sampled permutation using HP
   std::vector<std::vector<int>> tp_pi_all; // Randomly sampled permutations of all parties using HP
   std::vector<int> pi_common; // Common random permutation held by all parties except HP. HP holds dummy values

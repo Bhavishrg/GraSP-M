@@ -394,6 +394,11 @@ class Circuit {
     return output;
   }
 
+
+
+
+
+  
   // Level ordered gates are helpful for evaluation.
   [[nodiscard]] LevelOrderedCircuit orderGatesByLevel() const {
     LevelOrderedCircuit res;
