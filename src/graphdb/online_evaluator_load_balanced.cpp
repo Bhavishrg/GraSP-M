@@ -115,12 +115,10 @@ namespace graphdb
                     network_->flush(pid);
                 }
             }
+            
         }
-        // Bit decompose reconstructed m1 values
-        
 
-        
-        // Compute hamming using distance bits of m1 as input and bits of r1
+        // Compute hamming distance between bits of m1 and bits of r1
         std::vector<Ring> share_m2(num_eqz_gates, 0);
         #pragma omp parallel for
         for (int i = 0; i < num_eqz_gates; ++i) {
@@ -145,8 +143,8 @@ namespace graphdb
             }
         }
 
-    
-         // Reconstruct the masked input m1
+
+        // Reconstruct the masked input m2
         std::vector<Ring> recon_m2(num_eqz_gates, 0);
         if (id_ != pKing) {
             network_->send(pKing, share_m2.data(), share_m2.size() * sizeof(Ring));
@@ -179,6 +177,7 @@ namespace graphdb
                 }
             }
         }
+ 
 
         // Compute final output share
         std::vector<Ring> recon_out(num_eqz_gates, 0);

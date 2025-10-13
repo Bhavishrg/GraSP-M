@@ -43,7 +43,7 @@ class OfflineEvaluator {
   // dealer when other parties call other variant.
   static void randomShareSecret(int nP, int pid, RandGenPool& rgen,
                                 AddShare<Ring>& share, TPShare<Ring>& tpShare, Ring secret,
-                                std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
+                                std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec, bool print=0);
 
   // Generate sharing of a random unknown permutation.
   static void randomPermutation(int nP, int pid, RandGenPool& rgen, std::vector<int>& pi, size_t& vec_size);

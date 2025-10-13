@@ -9,26 +9,17 @@ namespace graphdb {
   RandGenPool::RandGenPool(int my_id, int num_parties, int num_clients, uint64_t seed) 
     : id_{my_id}, k_pi(num_parties + 1) { 
     
-    if(my_id <= num_parties) {
-      auto seed_block = emp::makeBlock(seed, 0); 
-      k_self.reseed(&seed_block, 0);
-      k_all.reseed(&seed_block, 0);
-      k_all_minus_0.reseed(&seed_block, 0);
-      k_p0.reseed(&seed_block, 0);
+    
+    auto seed_block = emp::makeBlock(seed, 0); 
+    k_self.reseed(&seed_block, 0);
+    k_all.reseed(&seed_block, 0);
+    k_all_minus_0.reseed(&seed_block, 0);
+    k_p0.reseed(&seed_block, 0);
 
-      for (int i = 1; i <= num_parties + num_clients; i++) {
-        k_pi[i].reseed(&seed_block, 0); 
-      }
-    } else {
-
-      // add seeds for clients, clients-parties
-      for (int i = 1; i <= num_clients; i++) {
-        auto seed_block = emp::makeBlock(seed, 0); 
-        emp::block b = emp::makeBlock(seed, i);
-        k_self.reseed(&seed_block, 0);
-        k_pi[i].reseed(&seed_block, 0);
-      }
+    for (int i = 1; i <= num_parties + num_clients; i++) {
+      k_pi[i].reseed(&seed_block, 0); 
     }
+    
   }
   // all keys will be the same. for different keys look at emp toolkit
 

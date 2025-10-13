@@ -40,7 +40,7 @@ void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AddShare<
 
 void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
                                          AddShare<Ring>& share, TPShare<Ring>& tpShare, Ring secret,
-                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec) {
+                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec, bool print) {
   if (pid == 0) {
     Ring val = Ring(0);
     Ring valn = Ring(0);
@@ -50,18 +50,31 @@ void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
       rgen.pi(i).random_data(&val, sizeof(Ring));
       tpShare.pushValues(val);
       valn += val;
+      if (print){
+        std::cout << "Eqz r2 share of p1: " << val << std::endl;
+      }
+      
     }
-    valn = secret - val;
+    valn = secret - valn;
     tpShare.pushValues(valn);
     rand_sh_sec.push_back(valn);
+    if (print){
+        std::cout << "Eqz r2 share of p2: " << valn << std::endl;
+    }
   } else {
     if (pid != nP) {
       Ring val;
       rgen.p0().random_data(&val, sizeof(Ring));
       share.pushValue(val);
+      if (print){
+        std::cout << "Eqz r2 share of p" << pid << ": " << val << std::endl;
+      }
     } else {
       share.pushValue(rand_sh_sec[idx_rand_sh_sec]);
       idx_rand_sh_sec++;
+      if (print){
+        std::cout << "Eqz r2 share of p" << pid << ": " << share.valueAt() << std::endl;
+      }
     }
   }
 }
@@ -168,20 +181,30 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           std::vector<TPShare<Ring>> tp_share_r1_bits(RINGSIZEBITS);
           std::vector<AddShare<Ring>> share_r2_bits(RINGSIZEBITS);
           std::vector<TPShare<Ring>> tp_share_r2_bits(RINGSIZEBITS);
-          randomShare(nP_, id_, rgen_, share_r1, tp_share_r1);
-          randomShare(nP_, id_, rgen_, share_r2, tp_share_r2);
           Ring tp_r1 = Ring(0);
           Ring tp_r2 = Ring(0);
           std::vector<Ring> tp_r1_bits(RINGSIZEBITS);
+          std::vector<Ring> tp_r2_bits(RINGSIZEBITS);
+
+          // sharing r1 and r1_bits
+          randomShare(nP_, id_, rgen_, share_r1, tp_share_r1);
+          
           if (id_ == 0) {
             tp_r1 = tp_share_r1.secret();
             tp_r1_bits = bitDecomposeToInt(tp_r1);
-            for (int i = 0; i < RINGSIZEBITS; ++i) {
-            randomShareSecret(nP_, id_, rgen_, share_r1_bits[i], tp_share_r1_bits[i], tp_r1_bits[i],
-                                                    rand_sh_sec, idx_rand_sh_sec);
           }
+          for (int i = 0; i < RINGSIZEBITS; ++i) {
+              randomShareSecret(nP_, id_, rgen_, share_r1_bits[i], tp_share_r1_bits[i], tp_r1_bits[i],
+                                                    rand_sh_sec, idx_rand_sh_sec);                                      
           }
-          std::vector<Ring> tp_r2_bits(RINGSIZEBITS);
+
+          // sharing r2 and r2_bits
+          if (id_ == 0) {
+            rgen_.p0().random_data(&tp_r2, sizeof(Ring));
+            tp_r2 = tp_r2 % RINGSIZEBITS; // make sure r2 is in [0, RINGSIZEBITS-1]
+          }
+          randomShareSecret(nP_, id_, rgen_, share_r2, tp_share_r2, tp_r2, rand_sh_sec, idx_rand_sh_sec, 1);
+
           if (id_ == 0) {
             tp_r2 = tp_share_r2.secret();
             for (int i = 0; i < RINGSIZEBITS; ++i) {
@@ -192,11 +215,11 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
               }
             }
           }
+
           for (int i = 0; i < RINGSIZEBITS; ++i) {
             randomShareSecret(nP_, id_, rgen_, share_r2_bits[i], tp_share_r2_bits[i], tp_r2_bits[i],
                                                     rand_sh_sec, idx_rand_sh_sec);
           }
-          // preproc for multk gate 
           preproc_.gates[gate->out] =
               std::make_unique<PreprocEqzGate<Ring>>(share_r1, tp_share_r1, share_r2, tp_share_r2, share_r1_bits, tp_share_r1_bits, share_r2_bits, tp_share_r2_bits);
           break;
