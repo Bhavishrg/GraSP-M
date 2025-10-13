@@ -48,6 +48,24 @@ struct PreprocMultGate : public PreprocGate<R> {
 };
 
 template <class R>
+struct PreprocEqzGate : public PreprocGate<R> {
+  AddShare<R> share_r1;
+  TPShare<R> tp_share_r1;
+  AddShare<R> share_r2;
+  TPShare<R> tp_share_r2;
+  std::vector<AddShare<R>> share_r1_bits;
+  std::vector<TPShare<R>> tp_share_r1_bits;
+  std::vector<AddShare<R>> share_r2_bits;
+  std::vector<TPShare<R>> tp_share_r2_bits;
+  PreprocEqzGate() = default;
+  PreprocEqzGate(const AddShare<R> &share_r1, const TPShare<R> &tp_share_r1,
+                 const AddShare<R> &share_r2, const TPShare<R> &tp_share_r2,
+                 const std::vector<AddShare<R>> &share_r1_bits, const std::vector<TPShare<R>> &tp_share_r1_bits,
+                 const std::vector<AddShare<R>> &share_r2_bits, const std::vector<TPShare<R>> &tp_share_r2_bits)
+    : PreprocGate<R>(), share_r1(share_r1), tp_share_r1(tp_share_r1), share_r2(share_r2), tp_share_r2(tp_share_r2), share_r1_bits(share_r1_bits), tp_share_r1_bits(tp_share_r1_bits), share_r2_bits(share_r2_bits), tp_share_r2_bits(tp_share_r2_bits) {}
+};
+
+template <class R>
 struct PreprocShuffleGate : public PreprocGate<R> {
   std::vector<AddShare<R>> a; // Randomly sampled vector
   std::vector<TPShare<R>> tp_a; // Randomly sampled vector

@@ -44,6 +44,8 @@ namespace graphdb {
 
     void evaluateGatesAtDepthPartyRecv(size_t depth, std::vector<Ring> &mult_vals);
 
+    void eqzEvaluate(const std::vector<common::utils::FIn1Gate> &eqz_gates);
+
     void evaluateGatesAtDepth(size_t depth);
 
     void shuffleEvaluate(const std::vector<common::utils::SIMDOGate> &shuffle_gates);

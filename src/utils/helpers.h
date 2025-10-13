@@ -33,6 +33,17 @@ std::vector<BoolRing> bitDecomposeTwo(R value) {
   return bitDecompose(val);
 }
 
+template <class R>
+std::vector<Ring> bitDecomposeToInt(R value) {
+  uint64_t val = conv<uint64_t>(value);
+  auto num_bits = sizeof(val) * 8;
+  std::vector<Ring> res(num_bits);
+  for (size_t i = 0; i < num_bits; ++i) {
+    res[i] = Ring(((val >> i) & 1ULL));
+  }
+  return res;
+}
+
 
 std::vector<uint64_t> packBool(const bool* data, size_t len);
 void unpackBool(const std::vector<uint64_t>& packed, bool* data, size_t len);

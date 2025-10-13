@@ -159,6 +159,49 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+         case common::utils::GateType::kEqz: {
+          AddShare<Ring> share_r1;
+          TPShare<Ring> tp_share_r1;
+          AddShare<Ring> share_r2;
+          TPShare<Ring> tp_share_r2;
+          std::vector<AddShare<Ring>> share_r1_bits(RINGSIZEBITS);
+          std::vector<TPShare<Ring>> tp_share_r1_bits(RINGSIZEBITS);
+          std::vector<AddShare<Ring>> share_r2_bits(RINGSIZEBITS);
+          std::vector<TPShare<Ring>> tp_share_r2_bits(RINGSIZEBITS);
+          randomShare(nP_, id_, rgen_, share_r1, tp_share_r1);
+          randomShare(nP_, id_, rgen_, share_r2, tp_share_r2);
+          Ring tp_r1 = Ring(0);
+          Ring tp_r2 = Ring(0);
+          std::vector<Ring> tp_r1_bits(RINGSIZEBITS);
+          if (id_ == 0) {
+            tp_r1 = tp_share_r1.secret();
+            tp_r1_bits = bitDecomposeToInt(tp_r1);
+            for (int i = 0; i < RINGSIZEBITS; ++i) {
+            randomShareSecret(nP_, id_, rgen_, share_r1_bits[i], tp_share_r1_bits[i], tp_r1_bits[i],
+                                                    rand_sh_sec, idx_rand_sh_sec);
+          }
+          }
+          std::vector<Ring> tp_r2_bits(RINGSIZEBITS);
+          if (id_ == 0) {
+            tp_r2 = tp_share_r2.secret();
+            for (int i = 0; i < RINGSIZEBITS; ++i) {
+              if (i == tp_r2 % RINGSIZEBITS) {
+                tp_r2_bits[i] = 1;
+              } else {
+                tp_r2_bits[i] = 0;
+              }
+            }
+          }
+          for (int i = 0; i < RINGSIZEBITS; ++i) {
+            randomShareSecret(nP_, id_, rgen_, share_r2_bits[i], tp_share_r2_bits[i], tp_r2_bits[i],
+                                                    rand_sh_sec, idx_rand_sh_sec);
+          }
+          // preproc for multk gate 
+          preproc_.gates[gate->out] =
+              std::make_unique<PreprocEqzGate<Ring>>(share_r1, tp_share_r1, share_r2, tp_share_r2, share_r1_bits, tp_share_r1_bits, share_r2_bits, tp_share_r2_bits);
+          break;
+        }
+
         case common::utils::GateType::kShuffle: {
           auto *shuffle_g = static_cast<common::utils::SIMDOGate *>(gate.get());
           auto vec_size = shuffle_g->in.size();

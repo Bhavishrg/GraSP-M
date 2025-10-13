@@ -67,6 +67,131 @@ namespace graphdb
         }
     }
 
+    void OnlineEvaluator::eqzEvaluate(const std::vector<common::utils::FIn1Gate> &eqz_gates) {
+        if (id_ == 0) { return; }
+        int pKing = 1; // Designated king party
+        size_t num_eqz_gates = eqz_gates.size();
+        std::vector<Ring> r1_send;
+        r1_send.reserve(num_eqz_gates);
+        std::vector<Ring> r2_send;
+        r2_send.reserve(num_eqz_gates);
+
+        // Compute share of m1 = input + random_value r1
+        #pragma omp parallel for
+        for (size_t i = 0; i < num_eqz_gates; ++i) {
+            auto &eqz_gate = eqz_gates[i];
+            auto *pre_eqz = static_cast<PreprocEqzGate<Ring> *>(preproc_.gates[eqz_gate.out].get());
+            Ring share_m1 = eqz_gate.in + pre_eqz->share_r1.valueAt();
+            r1_send[i] = share_m1;
+        }
+
+        // Reconstruct the masked input m1
+        std::vector<Ring> recon_m1(num_eqz_gates, 0);
+        if (id_ != pKing) {
+            network_->send(pKing, r1_send.data(), r1_send.size() * sizeof(Ring));
+            usleep(250);
+            network_->recv(pKing, recon_m1.data(), recon_m1.size() * sizeof(Ring));
+        } else {
+            std::vector<std::vector<Ring>> share_recv(nP_);
+            usleep(250);
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                share_recv[pid - 1] = std::vector<Ring>();
+                if (pid != pKing) {
+                    share_recv[pid - 1].resize(num_eqz_gates);
+                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
+                } else {
+                    share_recv[pid - 1].insert(share_recv[pid - 1].begin(), r1_send.begin(), r1_send.end());
+                }
+            }
+            for (int pid = 0; pid < nP_; ++pid) {
+                #pragma omp parallel for
+                for (int i = 0; i < num_eqz_gates; ++i) {
+                    recon_m1[i] += share_recv[pid][i];
+                }
+            }
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != pKing) {
+                    network_->send(pid, recon_m1.data(), recon_m1.size() * sizeof(Ring));
+                }
+            }
+        }
+
+        // Bit decompose reconstructed m1 values
+        
+
+        // Compute hamming using distance bits of m1 as input and bits of r1
+        std::vector<Ring> share_m2(num_eqz_gates, 0);
+        #pragma omp parallel for
+        for (int i = 0; i < num_eqz_gates; ++i) {
+            auto *pre_eqz = static_cast<PreprocEqzGate<Ring> *>(preproc_.gates[eqz_gates[i].out].get());
+            std::vector<Ring> m1_bits(RINGSIZEBITS);
+            m1_bits = bitDecomposeToInt(recon_m1[i]);
+            std::vector<Ring> r1_bits(RINGSIZEBITS);
+            for (int j = 0; j < RINGSIZEBITS; ++j) {
+                r1_bits[j] = pre_eqz->share_r1_bits[j].valueAt();
+            }
+            if (id_ == 1) {
+                for (int j = 0; j < RINGSIZEBITS; ++j) {
+                    share_m2[i] += m1_bits[j] + r1_bits[j] - 2 * m1_bits[j] * r1_bits[j];
+                }
+                share_m2[i] += pre_eqz->share_r2.valueAt();
+            }
+            else{
+                for (int j = 0; j < RINGSIZEBITS; ++j) {
+                    share_m2[i] += r1_bits[j] - 2 * m1_bits[j] * r1_bits[j];
+                }
+                share_m2[i] += pre_eqz->share_r2.valueAt();
+            }
+        }
+
+         // Reconstruct the masked input m1
+        std::vector<Ring> recon_m2(num_eqz_gates, 0);
+        if (id_ != pKing) {
+            network_->send(pKing, share_m2.data(), share_m2.size() * sizeof(Ring));
+            usleep(250);
+            network_->recv(pKing, recon_m2.data(), recon_m2.size() * sizeof(Ring));
+        } else {
+            std::vector<std::vector<Ring>> share_recv(nP_);
+            usleep(250);
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                share_recv[pid - 1] = std::vector<Ring>();
+                if (pid != pKing) {
+                    share_recv[pid - 1].resize(num_eqz_gates);
+                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
+                } else {
+                    share_recv[pid - 1].insert(share_recv[pid - 1].begin(), share_m2.begin(), share_m2.end());
+                }
+            }
+            for (int pid = 0; pid < nP_; ++pid) {
+                #pragma omp parallel for
+                for (int i = 0; i < num_eqz_gates; ++i) {
+                    recon_m2[i] += share_recv[pid][i];
+                }
+            }
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != pKing) {
+                    network_->send(pid, recon_m2.data(), recon_m2.size() * sizeof(Ring));
+                }
+            }
+        }
+
+        // Compute final output share
+        std::vector<Ring> recon_out(num_eqz_gates, 0);
+        #pragma omp parallel for
+        for (int i = 0; i < num_eqz_gates; ++i) {
+            auto *pre_eqz = static_cast<PreprocEqzGate<Ring> *>(preproc_.gates[eqz_gates[i].out].get());
+            std::vector<Ring> r2_bits(RINGSIZEBITS);
+            for (int j = 0; j < RINGSIZEBITS; ++j) {
+                r2_bits[j] = pre_eqz->share_r2_bits[j].valueAt();
+            }
+            recon_out[i] = r2_bits[recon_m2[i]];
+            wires_[eqz_gates[i].out] = recon_out[i]; // Reconstructed output
+        }
+    }
+
+
     void OnlineEvaluator::shuffleEvaluate(const std::vector<common::utils::SIMDOGate> &shuffle_gates) {
         if (id_ == 0) { return; }
         std::vector<Ring> z_all;
@@ -314,12 +439,12 @@ namespace graphdb
                     break;
                 }
 
-                // case ::common::utils::GateType::kEqz: {
-                //     auto *g = static_cast<common::utils::FIn1Gate *>(gate.get());
-                //     eqz_gates.push_back(*g);
-                //     eqz_num++;
-                //     break;
-                // }
+                case ::common::utils::GateType::kEqz: {
+                    auto *g = static_cast<common::utils::FIn1Gate *>(gate.get());
+                    eqz_gates.push_back(*g);
+                    eqz_num++;
+                    break;
+                }
 
 
                 case common::utils::GateType::kShuffle: {
@@ -338,9 +463,9 @@ namespace graphdb
             }
         }
 
-        // if (eqz_num > 0) {
-        //     eqzEvaluate(eqz_gates);
-        // }
+        if (eqz_num > 0) {
+            eqzEvaluate(eqz_gates);
+        }
 
 
         if (shuffle_num > 0) {
