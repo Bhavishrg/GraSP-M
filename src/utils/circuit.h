@@ -21,6 +21,7 @@ using wire_t = size_t;
 
 enum GateType {
   kInp,
+  kRec,
   kAdd,
   kMul,
   kSub,
@@ -254,7 +255,7 @@ class Circuit {
 
   // Function to add a single input gate.
   wire_t addGate(GateType type, wire_t input) {
-    if (type != GateType::kEqz) {
+    if (type != GateType::kEqz && type != GateType::kRec) {
       throw std::invalid_argument("Invalid gate type.");
     }
 
@@ -406,6 +407,12 @@ class Circuit {
     // i < j.
     for (const auto& gate : gates_) {
       switch (gate->type) {
+        case GateType::kRec: {
+          const auto* g = static_cast<FIn1Gate*>(gate.get());
+          gate_level[g->out] = gate_level[g->in] + 1;
+          depth = std::max(depth, gate_level[gate->out]);
+          break;
+        }
         case GateType::kAdd:
         case GateType::kSub: {
           const auto* g = static_cast<FIn2Gate*>(gate.get());

@@ -155,6 +155,17 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+        case common::utils::GateType::kRec: {
+          auto pregate = std::make_unique<PreprocRecGate<Ring>>();
+          // King party (party 1) receives the reconstructed value
+          bool is_king = (id_ == 1);
+          bool via_pking = true;  // Default: reconstruction via king party
+          pregate->Pking = is_king;
+          pregate->viaPking = via_pking;
+          preproc_.gates[gate->out] = std::move(pregate);
+          break;
+        }
+
         case common::utils::GateType::kMul: {
           AddShare<Ring> triple_a; // Holds one beaver triple share of a random value a
           TPShare<Ring> tp_triple_a; // Holds all the beaver triple shares of a random value a

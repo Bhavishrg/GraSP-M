@@ -40,6 +40,9 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
     case kInp:
       os << "Input";
       break;
+    case kRec:
+      os << "Reconstruction";
+      break;
 
     case kAdd:
       os << "Addition";

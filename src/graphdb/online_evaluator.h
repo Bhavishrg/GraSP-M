@@ -43,11 +43,14 @@ namespace graphdb {
     // void evaluateGatesAtDepthPartySend(size_t depth, std::vector<Ring> &mult_vals);
 
     // void evaluateGatesAtDepthPartyRecv(size_t depth, std::vector<Ring> &mult_vals);
-
+    
+    void RecEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates);
 
     void multEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates);
 
     void eqzEvaluate(const std::vector<common::utils::FIn1Gate> &eqz_gates);
+
+    void recEvaluate(const std::vector<common::utils::FIn1Gate> &rec_gates);
 
     void evaluateGatesAtDepth(size_t depth);
 

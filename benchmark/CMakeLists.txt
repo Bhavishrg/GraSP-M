@@ -12,6 +12,7 @@ add_benchmark(equality)
 add_benchmark(shuffle)
 add_benchmark(mult)
 add_benchmark(compaction)
+add_benchmark(reconstruction)
 
 add_custom_target(benchmarks)
 add_dependencies(benchmarks ${benchbin})

@@ -30,6 +30,15 @@ struct PreprocInput : public PreprocGate<R> {
 };
 
 template <class R>
+struct PreprocRecGate : public PreprocGate<R> {
+  bool Pking = false;
+  bool viaPking = true;  // Default: reconstruction via king party
+  PreprocRecGate() = default;
+  PreprocRecGate(bool Pking, bool viaPking = true)
+    : PreprocGate<R>(), Pking(Pking), viaPking(viaPking) {}
+};
+
+template <class R>
 struct PreprocMultGate : public PreprocGate<R> {
   // Secret shared product of inputs masks.
   AddShare<R> triple_a; // Holds one beaver triple share of a random value a
