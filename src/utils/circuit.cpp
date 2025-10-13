@@ -49,14 +49,6 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
       os << "Multiplication";
       break;
 
-    case kMul3:
-      os << "Multiplication with Fan-in 3";
-      break;
-
-    case kMul4:
-      os << "Multiplication with Fan-in 4";
-      break;
-
     case kSub:
       os << "Subtraction";
       break;
@@ -68,29 +60,9 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
     case kConstMul:
       os << "Multiplication with constant";
       break;
-
-    case kRelu:
-      os << "ReLU";
-      break;
-
-    case kMsb:
-      os << "MSB";
-      break;
     
     case kEqz:
       os << "Equals to zero";
-      break;
-
-    case kLtz: 
-      os << "Less than zero";
-      break;
-
-    case kDotprod:
-      os << "Dotproduct";
-      break;
-
-    case kTrdotp:
-      os << "Dotproduct with truncation";
       break;
 
     case kShuffle:
@@ -99,10 +71,6 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
 
     case kPermAndSh:
       os << "Permute and Share";
-      break;
-
-    case kAmortzdPnS:
-      os << "Amortized Permute and Share";
       break;
 
     case kPublicPerm:
