@@ -16,18 +16,20 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t vec_size) {
+common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t vec_size, size_t num_payloads) {
 
-    std::cout << "Generating compaction circuit" << std::endl;
+    std::cout << "Generating compaction circuit with " << num_payloads << " payload vectors" << std::endl;
     
     common::utils::Circuit<Ring> circ;
 
-    // Input: vector t (binary: 0 or 1) and vector p (payloads)
+    // Input: vector t (binary: 0 or 1) and multiple payload vectors
     std::vector<common::utils::wire_t> t_vector(vec_size);
-    std::vector<common::utils::wire_t> p_vector(vec_size);
+    std::vector<std::vector<common::utils::wire_t>> p_vectors(num_payloads, std::vector<common::utils::wire_t>(vec_size));
     
     std::generate(t_vector.begin(), t_vector.end(), [&]() { return circ.newInputWire(); });
-    std::generate(p_vector.begin(), p_vector.end(), [&]() { return circ.newInputWire(); });
+    for (size_t p = 0; p < num_payloads; ++p) {
+        std::generate(p_vectors[p].begin(), p_vectors[p].end(), [&]() { return circ.newInputWire(); });
+    }
 
     // Generate permutation for shuffle
     std::vector<std::vector<int>> permutation;
@@ -42,12 +44,18 @@ common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t v
         }
     }
 
-    // Use the compaction gate
-    auto [t_compacted, p_compacted] = circ.addCompactGate(t_vector, p_vector, permutation);
+    // Use the compaction gate with multiple payloads
+    auto [t_compacted, p_compacted] = circ.addCompactGate(t_vector, p_vectors, permutation);
     
-    // Set outputs: compacted t and p vectors
+    // Set outputs: compacted t and all p vectors
     for (size_t i = 0; i < vec_size; ++i) {
         circ.setAsOutput(t_compacted[i]);
+    }
+
+    for (size_t p = 0; p < num_payloads; ++p) {
+        for (size_t i = 0; i < vec_size; ++i) {
+            circ.setAsOutput(p_compacted[p][i]);
+        }
     }
 
     return circ;
@@ -70,6 +78,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto seed = opts["seed"].as<size_t>();
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
+    auto num_payloads = opts["num-payloads"].as<size_t>();
 
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
@@ -101,12 +110,15 @@ void benchmark(const bpo::variables_map& opts) {
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"vec_size", vec_size},
+                              {"num_payloads", num_payloads},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
                               {"seed", seed},
                               {"repeat", repeat}};
     output_data["benchmarks"] = json::array();
+
+    
 
     std::cout << "--- Details ---" << std::endl;
     for (const auto& [key, value] : output_data["details"].items()) {
@@ -117,7 +129,7 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint start(*network);
     network->sync();
 
-    auto circ = generateCompactionCircuit(nP, pid, vec_size).orderGatesByLevel();
+    auto circ = generateCompactionCircuit(nP, pid, vec_size, num_payloads).orderGatesByLevel();
     network->sync();
 
     std::cout << "--- Circuit ---" << std::endl;
@@ -161,21 +173,41 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << "Setting inputs for party " << pid << std::endl;
     
     // First vec_size wires are for t vector (binary: 0 or 1)
-    // Second vec_size wires are for p vector (payload values)
+    // Next vec_size wires are for p_vector[0], then p_vector[1], etc.
+    std::vector<Ring> t_input_values(vec_size);
+    std::vector<std::vector<Ring>> p_input_values(num_payloads, std::vector<Ring>(vec_size));
+    
     for (size_t i = 0; i < input_wires.size(); ++i) {
         auto wire = input_wires[i];
         if (i < vec_size) {
             // t vector: binary values (0 or 1)
-            inputs[wire] = static_cast<Ring>(rand() % 2);
+            Ring val = static_cast<Ring>(rand() % 2);
+            inputs[wire] = val;
+            t_input_values[i] = val;
         } else {
-            // p vector: random payload values
-            inputs[wire] = static_cast<Ring>(rand() % 100);
+            // p vectors: random payload values
+            size_t payload_idx = (i - vec_size) / vec_size;
+            size_t elem_idx = (i - vec_size) % vec_size;
+            Ring val = static_cast<Ring>(rand() % 100);
+            inputs[wire] = val;
+            p_input_values[payload_idx][elem_idx] = val;
         }
     }
 
-    // Print first few inputs for verification
-    for (size_t i = 0; i < std::min(size_t(10), inputs.size()); ++i) {
-        std::cout << "Input wire " << input_wires[i] << " (index " << i << "): " << inputs[input_wires[i]] << std::endl;
+    // Print inputs in structured format
+    std::cout << "\n=== INPUT VECTORS (Party " << pid << ") ===" << std::endl;
+    std::cout << "Tag vector (t): ";
+    for (size_t i = 0; i < vec_size; ++i) {
+        std::cout << t_input_values[i] << " ";
+    }
+    std::cout << std::endl;
+    
+    for (size_t p = 0; p < num_payloads; ++p) {
+        std::cout << "Payload[" << p << "]:     ";
+        for (size_t i = 0; i < vec_size; ++i) {
+            std::cout << p_input_values[p][i] << " ";
+        }
+        std::cout << std::endl;
     }
     std::cout << "Total inputs set: " << inputs.size() << std::endl;
     
@@ -187,9 +219,21 @@ void benchmark(const bpo::variables_map& opts) {
     
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
-    std::cout << "First few outputs: ";
-    for (size_t i = 0; i < std::min(size_t(30), outputs.size()); ++i) {
+    
+    // Print outputs in structured format
+    std::cout << "\n=== OUTPUT VECTORS (Party " << pid << ") ===" << std::endl;
+    std::cout << "Tag vector (t_compacted): ";
+    for (size_t i = 0; i < vec_size; ++i) {
         std::cout << outputs[i] << " ";
+    }
+    std::cout << std::endl;
+    
+    for (size_t p = 0; p < num_payloads; ++p) {
+        std::cout << "Payload[" << p << "] (compacted):  ";
+        for (size_t i = 0; i < vec_size; ++i) {
+            std::cout << outputs[vec_size * (p + 1) + i] << " ";
+        }
+        std::cout << std::endl;
     }
     std::cout << std::endl;
     
@@ -246,6 +290,7 @@ bpo::options_description programOptions() {
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
         ("vec-size,v", bpo::value<size_t>()->required(), "Size of the vector to compact.")
+        ("num-payloads", bpo::value<size_t>()->default_value(1), "Number of payload vectors.")
         ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")

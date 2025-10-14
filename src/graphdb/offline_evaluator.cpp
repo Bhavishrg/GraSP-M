@@ -358,9 +358,13 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
         case common::utils::GateType::kCompact: {
           // Compact gate preprocessing: shuffle + multiplications
           auto *compact_g = static_cast<common::utils::SIMDOGate *>(gate.get());
-          // Input is [t0,...,tn, p0,...,pn], output is [t_compact0,...,t_compactn, p_compact0,...,p_compactn]
-          auto total_size = compact_g->in.size(); // Should be 2 * vec_size
-          auto vec_size = total_size / 2;
+          // Input is [t0,...,tn, p1_0,...,p1_n, p2_0,...,p2_n, ...]
+          // Output is [t_compact0,...,t_compactn, p1_compact0,...,p1_compactn, p2_compact0,...,p2_compactn, ...]
+          auto total_size = compact_g->in.size();
+          auto output_size = compact_g->outs.size();
+          // vec_size * (1 + num_payloads) = total_size
+          // Determine vec_size from permutation size (which is always vec_size)
+          auto vec_size = compact_g->permutation[0].size();
           
           // Preprocessing for 3 shuffle operations (p, t, label) - we'll use same shuffle data for all 3
           std::vector<AddShare<Ring>> shuffle_a(vec_size);

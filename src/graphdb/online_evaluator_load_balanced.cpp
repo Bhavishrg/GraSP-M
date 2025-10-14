@@ -455,16 +455,28 @@ namespace graphdb
         if (id_ == 0) { return; }
         
         auto *pre_compact = static_cast<PreprocCompactGate<Ring> *>(preproc_.gates[compact_gate.out].get());
-        size_t total_size = compact_gate.in.size(); // 2 * vec_size
-        size_t vec_size = total_size / 2;
+        size_t total_size = compact_gate.in.size();
+        // Determine vec_size and num_payloads from total_size
+        // total_size = vec_size * (1 + num_payloads)
+        // We can get this from the output size as well
+        size_t total_outputs = compact_gate.outs.size();
+        // Need to determine vec_size - it's stored in preprocessing or we can deduce it
+        // From preprocessing, we know shuffle_a.size() gives us vec_size
+        size_t vec_size = pre_compact->shuffle_a.size();
+        size_t num_payloads = (total_size / vec_size) - 1;
         
         // Extract t and p vectors from inputs
-        // Input format: [t0,...,tn, p0,...,pn]
+        // Input format: [t0,...,tn, p1_0,...,p1_n, p2_0,...,p2_n, ...]
         std::vector<Ring> t_shares(vec_size);
-        std::vector<Ring> p_shares(vec_size);
+        std::vector<std::vector<Ring>> p_shares(num_payloads, std::vector<Ring>(vec_size));
+        
         for (size_t i = 0; i < vec_size; ++i) {
             t_shares[i] = wires_[compact_gate.in[i]];
-            p_shares[i] = wires_[compact_gate.in[vec_size + i]];
+        }
+        for (size_t p = 0; p < num_payloads; ++p) {
+            for (size_t i = 0; i < vec_size; ++i) {
+                p_shares[p][i] = wires_[compact_gate.in[vec_size * (p + 1) + i]];
+            }
         }
         
         // Step 1: Compute prefix sums c0 and c1 locally on shares
@@ -585,22 +597,166 @@ namespace graphdb
             }
         }
         
-        // Step 3: Shuffle t, p, and label using the shuffle preprocessing
-        // We'll shuffle all three using the same shuffle operation repeated 3 times
+        // Step 3: Shuffle t, all p vectors, and label using the shuffle preprocessing
         std::vector<Ring> t_shuffled(vec_size);
-        std::vector<Ring> p_shuffled(vec_size);
+        std::vector<std::vector<Ring>> p_shuffled(num_payloads, std::vector<Ring>(vec_size));
         std::vector<Ring> label_shuffled(vec_size);
         
-        // Shuffle t, p, label - simplified version (single shuffle operation)
-        // This is a simplified implementation - in practice you'd call shuffleEvaluate 3 times
-        // For now, we'll just do the core shuffle logic inline
+        // Perform shuffle for all vectors (t, p1, p2, ..., label)
+        // We use the same shuffle preprocessing for all
         
-        // TODO: Implement full shuffle for t, p, label
-        // For now, just copy the shares (no shuffle for testing)
+        // Compute z = input + a for each vector
+        std::vector<Ring> z_t(vec_size);
+        std::vector<std::vector<Ring>> z_p(num_payloads, std::vector<Ring>(vec_size));
+        std::vector<Ring> z_label(vec_size);
+        
         for (size_t i = 0; i < vec_size; ++i) {
-            t_shuffled[i] = t_shares[i];
-            p_shuffled[i] = p_shares[i];
-            label_shuffled[i] = label_shares[i];
+            z_t[i] = t_shares[i] + pre_compact->shuffle_a[i].valueAt();
+            z_label[i] = label_shares[i] + pre_compact->shuffle_a[i].valueAt();
+        }
+        for (size_t p = 0; p < num_payloads; ++p) {
+            for (size_t i = 0; i < vec_size; ++i) {
+                z_p[p][i] = p_shares[p][i] + pre_compact->shuffle_a[i].valueAt();
+            }
+        }
+        
+        if (id_ == 1) {
+            // Party 1 collects z values from all parties
+            std::vector<std::vector<Ring>> z_t_recv(nP_);
+            std::vector<std::vector<std::vector<Ring>>> z_p_recv(nP_, std::vector<std::vector<Ring>>(num_payloads));
+            std::vector<std::vector<Ring>> z_label_recv(nP_);
+            
+            z_t_recv[0] = z_t;
+            z_p_recv[0] = z_p;
+            z_label_recv[0] = z_label;
+            
+            #pragma omp parallel for
+            for (int pid = 2; pid <= nP_; ++pid) {
+                z_t_recv[pid - 1].resize(vec_size);
+                z_label_recv[pid - 1].resize(vec_size);
+                network_->recv(pid, z_t_recv[pid - 1].data(), vec_size * sizeof(Ring));
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    z_p_recv[pid - 1][p].resize(vec_size);
+                    network_->recv(pid, z_p_recv[pid - 1][p].data(), vec_size * sizeof(Ring));
+                }
+                network_->recv(pid, z_label_recv[pid - 1].data(), vec_size * sizeof(Ring));
+            }
+            usleep(latency_);
+            
+            // Sum all z values
+            std::vector<Ring> z_t_sum(vec_size, 0);
+            std::vector<std::vector<Ring>> z_p_sum(num_payloads, std::vector<Ring>(vec_size, 0));
+            std::vector<Ring> z_label_sum(vec_size, 0);
+            
+            for (int pid = 0; pid < nP_; ++pid) {
+                for (size_t i = 0; i < vec_size; ++i) {
+                    z_t_sum[i] += z_t_recv[pid][i];
+                    z_label_sum[i] += z_label_recv[pid][i];
+                }
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        z_p_sum[p][i] += z_p_recv[pid][p][i];
+                    }
+                }
+            }
+            
+            // Apply permutation and add b
+            std::vector<Ring> z_t_perm(vec_size);
+            std::vector<std::vector<Ring>> z_p_perm(num_payloads, std::vector<Ring>(vec_size));
+            std::vector<Ring> z_label_perm(vec_size);
+            
+            for (size_t i = 0; i < vec_size; ++i) {
+                int pi_i = pre_compact->shuffle_pi[i];
+                z_t_perm[i] = z_t_sum[pi_i] + pre_compact->shuffle_b[pi_i].valueAt();
+                z_label_perm[i] = z_label_sum[pi_i] + pre_compact->shuffle_b[pi_i].valueAt();
+                
+                // Set output shares to c
+                t_shuffled[i] = pre_compact->shuffle_c[i].valueAt();
+                label_shuffled[i] = pre_compact->shuffle_c[i].valueAt();
+            }
+            for (size_t p = 0; p < num_payloads; ++p) {
+                for (size_t i = 0; i < vec_size; ++i) {
+                    int pi_i = pre_compact->shuffle_pi[i];
+                    z_p_perm[p][i] = z_p_sum[p][pi_i] + pre_compact->shuffle_b[pi_i].valueAt();
+                    p_shuffled[p][i] = pre_compact->shuffle_c[i].valueAt();
+                }
+            }
+            
+            // Send to party 2
+            network_->send(2, z_t_perm.data(), vec_size * sizeof(Ring));
+            for (size_t p = 0; p < num_payloads; ++p) {
+                network_->send(2, z_p_perm[p].data(), vec_size * sizeof(Ring));
+            }
+            network_->send(2, z_label_perm.data(), vec_size * sizeof(Ring));
+            
+        } else {
+            // Parties 2 to nP
+            // Send z values to party 1
+            network_->send(1, z_t.data(), vec_size * sizeof(Ring));
+            for (size_t p = 0; p < num_payloads; ++p) {
+                network_->send(1, z_p[p].data(), vec_size * sizeof(Ring));
+            }
+            network_->send(1, z_label.data(), vec_size * sizeof(Ring));
+            network_->flush(1);
+            
+            // Receive from previous party
+            std::vector<Ring> z_t_recv(vec_size);
+            std::vector<std::vector<Ring>> z_p_recv(num_payloads, std::vector<Ring>(vec_size));
+            std::vector<Ring> z_label_recv(vec_size);
+            
+            network_->recv(id_ - 1, z_t_recv.data(), vec_size * sizeof(Ring));
+            for (size_t p = 0; p < num_payloads; ++p) {
+                network_->recv(id_ - 1, z_p_recv[p].data(), vec_size * sizeof(Ring));
+            }
+            network_->recv(id_ - 1, z_label_recv.data(), vec_size * sizeof(Ring));
+            usleep(latency_);
+            
+            // Apply permutation and add b
+            std::vector<Ring> z_t_send(vec_size);
+            std::vector<std::vector<Ring>> z_p_send(num_payloads, std::vector<Ring>(vec_size));
+            std::vector<Ring> z_label_send(vec_size);
+            
+            for (size_t i = 0; i < vec_size; ++i) {
+                int pi_i = pre_compact->shuffle_pi[i];
+                
+                if (id_ != nP_) {
+                    z_t_send[i] = z_t_recv[pi_i] + pre_compact->shuffle_b[pi_i].valueAt();
+                    z_label_send[i] = z_label_recv[pi_i] + pre_compact->shuffle_b[pi_i].valueAt();
+                    
+                    t_shuffled[i] = pre_compact->shuffle_c[i].valueAt();
+                    label_shuffled[i] = pre_compact->shuffle_c[i].valueAt();
+                } else {
+                    // Last party subtracts delta
+                    z_t_send[i] = z_t_recv[pi_i] + pre_compact->shuffle_b[pi_i].valueAt() - pre_compact->shuffle_delta[i];
+                    z_label_send[i] = z_label_recv[pi_i] + pre_compact->shuffle_b[pi_i].valueAt() - pre_compact->shuffle_delta[i];
+                    
+                    t_shuffled[i] = z_t_send[i] + pre_compact->shuffle_c[i].valueAt();
+                    label_shuffled[i] = z_label_send[i] + pre_compact->shuffle_c[i].valueAt();
+                }
+            }
+            
+            for (size_t p = 0; p < num_payloads; ++p) {
+                for (size_t i = 0; i < vec_size; ++i) {
+                    int pi_i = pre_compact->shuffle_pi[i];
+                    
+                    if (id_ != nP_) {
+                        z_p_send[p][i] = z_p_recv[p][pi_i] + pre_compact->shuffle_b[pi_i].valueAt();
+                        p_shuffled[p][i] = pre_compact->shuffle_c[i].valueAt();
+                    } else {
+                        z_p_send[p][i] = z_p_recv[p][pi_i] + pre_compact->shuffle_b[pi_i].valueAt() - pre_compact->shuffle_delta[i];
+                        p_shuffled[p][i] = z_p_send[p][i] + pre_compact->shuffle_c[i].valueAt();
+                    }
+                }
+            }
+            
+            // Send to next party (if not last)
+            if (id_ != nP_) {
+                network_->send(id_ + 1, z_t_send.data(), vec_size * sizeof(Ring));
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    network_->send(id_ + 1, z_p_send[p].data(), vec_size * sizeof(Ring));
+                }
+                network_->send(id_ + 1, z_label_send.data(), vec_size * sizeof(Ring));
+            }
         }
         
         // Step 4: Reconstruct label_shuffled
@@ -636,13 +792,15 @@ namespace graphdb
         
         // Step 5: Apply public permutation based on reconstructed labels
         std::unordered_map<common::utils::wire_t, Ring> temp_t_outputs;
-        std::unordered_map<common::utils::wire_t, Ring> temp_p_outputs;
+        std::vector<std::unordered_map<common::utils::wire_t, Ring>> temp_p_outputs(num_payloads);
         
         for (size_t i = 0; i < vec_size; ++i) {
             int idx_perm = static_cast<int>(label_reconstructed[i]);
             if (idx_perm >= 0 && idx_perm < vec_size) {
                 temp_t_outputs[compact_gate.outs[idx_perm]] = t_shuffled[i];
-                temp_p_outputs[compact_gate.outs[vec_size + idx_perm]] = p_shuffled[i];
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    temp_p_outputs[p][compact_gate.outs[vec_size * (p + 1) + idx_perm]] = p_shuffled[p][i];
+                }
             }
         }
         
@@ -650,8 +808,10 @@ namespace graphdb
         for (const auto& [wire_id, value] : temp_t_outputs) {
             wires_[wire_id] = value;
         }
-        for (const auto& [wire_id, value] : temp_p_outputs) {
-            wires_[wire_id] = value;
+        for (size_t p = 0; p < num_payloads; ++p) {
+            for (const auto& [wire_id, value] : temp_p_outputs[p]) {
+                wires_[wire_id] = value;
+            }
         }
     }
 

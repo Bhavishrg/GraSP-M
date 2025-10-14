@@ -387,51 +387,76 @@ class Circuit {
   //   return output;
   // }
 
-  // Add a compaction gate that takes t (tags) and p (payloads) vectors
-  // Returns compacted versions of both vectors
-  std::pair<std::vector<wire_t>, std::vector<wire_t>> addCompactGate(
+  // Add a compaction gate that takes t (tags) and multiple payload vectors
+  // Returns compacted versions of t and all payload vectors
+  std::pair<std::vector<wire_t>, std::vector<std::vector<wire_t>>> addCompactGate(
       const std::vector<wire_t>& t_vector,
-      const std::vector<wire_t>& p_vector,
+      const std::vector<std::vector<wire_t>>& p_vectors,
       const std::vector<std::vector<int>>& permutation) {
     
-    if (t_vector.size() != p_vector.size()) {
-      throw std::invalid_argument("t_vector and p_vector must have the same size.");
+    size_t vec_size = t_vector.size();
+    size_t num_payloads = p_vectors.size();
+    
+    if (num_payloads == 0) {
+      throw std::invalid_argument("At least one payload vector is required.");
     }
     
-    size_t vec_size = t_vector.size();
-    
-    // Validate input wires
-    for (size_t i = 0; i < vec_size; i++) {
-      if (!isWireValid(t_vector[i]) || !isWireValid(p_vector[i])) {
-        throw std::invalid_argument("Invalid wire ID.");
+    // Validate all payload vectors have same size as t_vector
+    for (size_t p = 0; p < num_payloads; ++p) {
+      if (p_vectors[p].size() != vec_size) {
+        throw std::invalid_argument("All payload vectors must have the same size as t_vector.");
       }
     }
     
-    // Create output wires: vec_size for t_compacted, vec_size for p_compacted
+    // Validate input wires
+    for (size_t i = 0; i < vec_size; i++) {
+      if (!isWireValid(t_vector[i])) {
+        throw std::invalid_argument("Invalid wire ID in t_vector.");
+      }
+      for (size_t p = 0; p < num_payloads; ++p) {
+        if (!isWireValid(p_vectors[p][i])) {
+          throw std::invalid_argument("Invalid wire ID in payload vector.");
+        }
+      }
+    }
+    
+    // Create output wires: vec_size for t_compacted, vec_size for each p_compacted
     std::vector<wire_t> t_compacted(vec_size);
-    std::vector<wire_t> p_compacted(vec_size);
+    std::vector<std::vector<wire_t>> p_compacted(num_payloads, std::vector<wire_t>(vec_size));
     
     for (size_t i = 0; i < vec_size; i++) {
       t_compacted[i] = num_wires + i;
-      p_compacted[i] = num_wires + vec_size + i;
+    }
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        p_compacted[p][i] = num_wires + vec_size * (p + 1) + i;
+      }
     }
     
-    // Create input vector [t0, t1, ..., tn, p0, p1, ..., pn]
-    std::vector<wire_t> input(2 * vec_size);
+    // Create input vector [t0, t1, ..., tn, p1_0, p1_1, ..., p1_n, p2_0, ...]
+    std::vector<wire_t> input((1 + num_payloads) * vec_size);
     for (size_t i = 0; i < vec_size; i++) {
       input[i] = t_vector[i];
-      input[vec_size + i] = p_vector[i];
+    }
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        input[vec_size * (p + 1) + i] = p_vectors[p][i];
+      }
     }
     
     // Create output vector for the gate
-    std::vector<wire_t> output(2 * vec_size);
+    std::vector<wire_t> output((1 + num_payloads) * vec_size);
     for (size_t i = 0; i < vec_size; i++) {
       output[i] = t_compacted[i];
-      output[vec_size + i] = p_compacted[i];
+    }
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        output[vec_size * (p + 1) + i] = p_compacted[p][i];
+      }
     }
     
     gates_.push_back(std::make_shared<SIMDOGate>(GateType::kCompact, 0, input, output, permutation));
-    num_wires += 2 * vec_size;
+    num_wires += (1 + num_payloads) * vec_size;
     
     return {t_compacted, p_compacted};
   }
