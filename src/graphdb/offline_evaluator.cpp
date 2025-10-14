@@ -355,6 +355,63 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+        case common::utils::GateType::kCompact: {
+          // Compact gate preprocessing: shuffle + multiplications
+          auto *compact_g = static_cast<common::utils::SIMDOGate *>(gate.get());
+          // Input is [t0,...,tn, p0,...,pn], output is [t_compact0,...,t_compactn, p_compact0,...,p_compactn]
+          auto total_size = compact_g->in.size(); // Should be 2 * vec_size
+          auto vec_size = total_size / 2;
+          
+          // Preprocessing for 3 shuffle operations (p, t, label) - we'll use same shuffle data for all 3
+          std::vector<AddShare<Ring>> shuffle_a(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_a(vec_size);
+          std::vector<AddShare<Ring>> shuffle_b(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_b(vec_size);
+          std::vector<AddShare<Ring>> shuffle_c(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_c(vec_size);
+          
+          for (int i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, shuffle_a[i], shuffle_tp_a[i]);
+            randomShare(nP_, id_, rgen_, shuffle_b[i], shuffle_tp_b[i]);
+            randomShare(nP_, id_, rgen_, shuffle_c[i], shuffle_tp_c[i]);
+          }
+          
+          std::vector<int> shuffle_pi;
+          std::vector<std::vector<int>> shuffle_tp_pi_all;
+          if (id_ != 0) {
+            shuffle_pi = std::move(compact_g->permutation[0]);
+          } else {
+            shuffle_tp_pi_all = std::move(compact_g->permutation);
+          }
+          
+          std::vector<Ring> shuffle_delta(vec_size);
+          generateShuffleDeltaVector(nP_, id_, rgen_, shuffle_delta, shuffle_tp_a, shuffle_tp_b, shuffle_tp_c,
+                                    shuffle_tp_pi_all, vec_size, rand_sh_sec, idx_rand_sh_sec);
+          
+          // Preprocessing for vec_size multiplications (for label computation)
+          std::vector<AddShare<Ring>> mult_triple_a(vec_size);
+          std::vector<TPShare<Ring>> mult_tp_triple_a(vec_size);
+          std::vector<AddShare<Ring>> mult_triple_b(vec_size);
+          std::vector<TPShare<Ring>> mult_tp_triple_b(vec_size);
+          std::vector<AddShare<Ring>> mult_triple_c(vec_size);
+          std::vector<TPShare<Ring>> mult_tp_triple_c(vec_size);
+          
+          for (int i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, mult_triple_a[i], mult_tp_triple_a[i]);
+            randomShare(nP_, id_, rgen_, mult_triple_b[i], mult_tp_triple_b[i]);
+            Ring tp_prod;
+            if (id_ == 0) { tp_prod = mult_tp_triple_a[i].secret() * mult_tp_triple_b[i].secret(); }
+            randomShareSecret(nP_, id_, rgen_, mult_triple_c[i], mult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
+          }
+          
+          preproc_.gates[gate->out] = std::move(std::make_unique<PreprocCompactGate<Ring>>(
+              shuffle_a, shuffle_tp_a, shuffle_b, shuffle_tp_b, shuffle_c, shuffle_tp_c,
+              shuffle_delta, shuffle_pi, shuffle_tp_pi_all,
+              mult_triple_a, mult_tp_triple_a, mult_triple_b, mult_tp_triple_b,
+              mult_triple_c, mult_tp_triple_c, true));
+          break;
+        }
+
         default: {
           break;
         }

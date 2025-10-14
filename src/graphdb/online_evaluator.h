@@ -59,6 +59,8 @@ namespace graphdb {
 
     void permAndShEvaluate(const std::vector<common::utils::SIMDOGate> &permAndSh_gates);
 
+    void compactEvaluate(const common::utils::SIMDOGate &compact_gate);
+
     std::vector<Ring> getOutputs();
 
     Ring reconstruct(AddShare<Ring> &shares);

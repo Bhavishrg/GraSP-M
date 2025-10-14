@@ -80,6 +80,10 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
       os << "Public Permutation";
       break;
 
+    case kCompact:
+      os << "Compact";
+      break;
+
     default:
       os << "Invalid";
       break;

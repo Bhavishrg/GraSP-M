@@ -29,60 +29,7 @@ common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t v
     std::generate(t_vector.begin(), t_vector.end(), [&]() { return circ.newInputWire(); });
     std::generate(p_vector.begin(), p_vector.end(), [&]() { return circ.newInputWire(); });
 
-    // Step 1: Construct c0 and c1 vectors to count number of 0s and 1s
-    std::vector<common::utils::wire_t> c1_vector(vec_size);
-    std::vector<common::utils::wire_t> c0_vector(vec_size);
-    
-    // c1[0] = t[0]
-    c1_vector[0] = t_vector[0];
-    
-    // c0[0] = 1 - c1[0]
-    c0_vector[0] = circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                       circ.addConstOpGate(common::utils::GateType::kConstMul, c1_vector[0], -1), 
-                                       1);
-    
-    // For j = 1 to N-1:
-    for (size_t j = 1; j < vec_size; ++j) {
-        // c1[j] = c1[j-1] + t[j]
-        c1_vector[j] = circ.addGate(common::utils::GateType::kAdd, c1_vector[j-1], t_vector[j]);
-        c0_vector[j] = circ.addConstOpGate(common::utils::GateType::kConstAdd, 
-                                       circ.addConstOpGate(common::utils::GateType::kConstMul, c1_vector[j], -1), 
-                                       j+1);
-    }
-
-    
-    
-    // Step 2: Construct label vector
-    // label[j] = { c0[j] + c1[N-1], if t[j] = 0
-    //            { c1[j],           otherwise
-    // 
-    // We implement this as: label[j] = (c0[j] + c1[N-1] - c1[j])(1 - t[j]) + c1[j]
-    
-    std::vector<common::utils::wire_t> label_vector(vec_size);
-    auto c1_last = c1_vector[vec_size - 1];
-    
-    for (size_t j = 0; j < vec_size; ++j) {
-        // Compute c0[j] + c1[N-1]
-        auto c0_plus_c1last = circ.addGate(common::utils::GateType::kAdd, c0_vector[j], c1_last);
-        
-        // Compute c0[j] + c1[N-1] - c1[j]
-        auto diff_term = circ.addGate(common::utils::GateType::kSub, c0_plus_c1last, c1_vector[j]);
-
-        // Compute (1 - t[j]) = 1 + (-1)*t[j]
-        auto one_minus_t = circ.addConstOpGate(common::utils::GateType::kConstMul, t_vector[j], -1);
-        one_minus_t = circ.addConstOpGate(common::utils::GateType::kConstAdd, one_minus_t, 1);
-
-        
-        // Compute (c0[j] + c1[N-1] - c1[j]) * (1 - t[j])
-        auto mult_term = circ.addGate(common::utils::GateType::kMul, diff_term, one_minus_t);
-
-        // label[j] = (c0[j] + c1[N-1] - c1[j]) * (1 - t[j]) + c1[j]
-        label_vector[j] = circ.addGate(common::utils::GateType::kAdd, mult_term, c1_vector[j]);
-        
-    }
-
-     // Step 3: Shuffle the elements in p, t, label using the same random permutation
-    // Generate permutation
+    // Generate permutation for shuffle
     std::vector<std::vector<int>> permutation;
     std::vector<int> tmp_perm(vec_size);
     for (size_t i = 0; i < vec_size; ++i) {
@@ -94,47 +41,15 @@ common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t v
             permutation.push_back(tmp_perm);
         }
     }
-    
-    auto p_shuffled = circ.addMGate(common::utils::GateType::kShuffle, p_vector, permutation);
-    auto t_shuffled = circ.addMGate(common::utils::GateType::kShuffle, t_vector, permutation);
-    auto label_shuffled = circ.addMGate(common::utils::GateType::kShuffle, label_vector, permutation);
-    
 
-    // Step 4: Reconstruct label to get the actual permutation values
-    // Use reconstruction gate to reveal label values
-    
-    std::vector<common::utils::wire_t> label_reconstructed(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        // label_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, label_shuffled[i]);
-        label_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, label_vector[i]);
-    }
-    
-    // Step 5: Apply permutation using kPublicPerm
-    // The permutation will be determined at runtime from reconstructed labels
-    // We encode the wire IDs of label_reconstructed in the permutation field using negative values
-    // as a signal that these should be read from wires during evaluation
-    //
-    // Format: permutation[i] = -(label_reconstructed[i] + 1)
-    // This allows the evaluator to detect (perm < 0) and read from wire (-perm - 1)
-    
-    std::vector<int> dynamic_perm(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        // Encode: negative value means "read from this wire ID"
-        // We use -(wire_id + 1) to avoid confusion with wire 0
-        dynamic_perm[i] = -(static_cast<int>(label_reconstructed[i]) + 1);
-    }
-    
-    auto p_compacted = circ.addConstOpMGate(common::utils::GateType::kPublicPerm, p_shuffled, dynamic_perm);
-    auto t_compacted = circ.addConstOpMGate(common::utils::GateType::kPublicPerm, t_shuffled, dynamic_perm);
+    // Use the compaction gate
+    auto [t_compacted, p_compacted] = circ.addCompactGate(t_vector, p_vector, permutation);
     
     // Set outputs: compacted t and p vectors
     for (size_t i = 0; i < vec_size; ++i) {
         circ.setAsOutput(t_compacted[i]);
-        circ.setAsOutput(p_compacted[i]);
     }
 
-   
-    
     return circ;
 }
 
@@ -273,7 +188,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     std::cout << "First few outputs: ";
-    for (size_t i = 0; i < std::min(size_t(10), outputs.size()); ++i) {
+    for (size_t i = 0; i < std::min(size_t(30), outputs.size()); ++i) {
         std::cout << outputs[i] << " ";
     }
     std::cout << std::endl;
