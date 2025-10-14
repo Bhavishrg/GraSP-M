@@ -17,6 +17,7 @@ namespace graphdb {
   class OnlineEvaluator {
     int nP_;
     int id_;
+    int latency_;  // Network latency in microseconds
     RandGenPool rgen_;
     std::shared_ptr<io::NetIOMP> network_;
     PreprocCircuit<Ring> preproc_;
@@ -29,12 +30,12 @@ namespace graphdb {
     OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                     PreprocCircuit<Ring> preproc,
                     common::utils::LevelOrderedCircuit circ,
-                    int threads, int seed = 200);
+                    int threads, int seed = 200, int latency = 100);
 
     OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                     PreprocCircuit<Ring> preproc,
                     common::utils::LevelOrderedCircuit circ,
-                    std::shared_ptr<ThreadPool> tpool, int seed = 200);
+                    std::shared_ptr<ThreadPool> tpool, int seed = 200, int latency = 100);
 
     void setInputs(const std::unordered_map<common::utils::wire_t, Ring> &inputs);
 

@@ -60,6 +60,14 @@ common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t v
     
     std::vector<common::utils::wire_t> label_vector(vec_size);
     auto c1_last = c1_vector[vec_size - 1];
+
+    std::vector<common::utils::wire_t> label_reconstructed1(vec_size);
+    std::vector<common::utils::wire_t> label_reconstructed2(vec_size);
+    std::vector<common::utils::wire_t> label_reconstructed3(vec_size);
+
+    for (size_t j = 0; j < vec_size; ++j) {
+        label_reconstructed1[j] = circ.addGate(common::utils::GateType::kRec, c1_vector[j]);
+    }
     
     for (size_t j = 0; j < vec_size; ++j) {
         // Compute c0[j] + c1[N-1]
@@ -75,39 +83,40 @@ common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t v
         
         // Compute (c0[j] + c1[N-1] - c1[j]) * (1 - t[j])
         auto mult_term = circ.addGate(common::utils::GateType::kMul, diff_term, one_minus_t);
+        label_reconstructed2[j] = circ.addGate(common::utils::GateType::kRec, mult_term);
 
         // label[j] = (c0[j] + c1[N-1] - c1[j]) * (1 - t[j]) + c1[j]
         label_vector[j] = circ.addGate(common::utils::GateType::kAdd, mult_term, c1_vector[j]);
+        label_reconstructed3[j] = circ.addGate(common::utils::GateType::kRec, label_vector[j]);
         
     }
-
-     // Step 3: Shuffle the elements in p, t, label using the same random permutation
+    
+    // Step 3: Shuffle the elements in p, t, label using the same random permutation
     // Generate permutation
-    std::vector<std::vector<int>> permutation;
-    std::vector<int> tmp_perm(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        tmp_perm[i] = i;
-    }
-    permutation.push_back(tmp_perm);
-    if (pid == 0) {
-        for (int i = 1; i < nP; ++i) {
-            permutation.push_back(tmp_perm);
-        }
-    }
+    // std::vector<std::vector<int>> permutation;
+    // std::vector<int> tmp_perm(vec_size);
+    // for (size_t i = 0; i < vec_size; ++i) {
+    //     tmp_perm[i] = i;
+    // }
+    // permutation.push_back(tmp_perm);
+    // if (pid == 0) {
+    //     for (int i = 1; i < nP; ++i) {
+    //         permutation.push_back(tmp_perm);
+    //     }
+    // }
     
-    auto p_shuffled = circ.addMGate(common::utils::GateType::kShuffle, p_vector, permutation);
-    auto t_shuffled = circ.addMGate(common::utils::GateType::kShuffle, t_vector, permutation);
-    auto label_shuffled = circ.addMGate(common::utils::GateType::kShuffle, label_vector, permutation);
+    // auto p_shuffled = circ.addMGate(common::utils::GateType::kShuffle, p_vector, permutation);
+    // auto t_shuffled = circ.addMGate(common::utils::GateType::kShuffle, t_vector, permutation);
+    // auto label_shuffled = circ.addMGate(common::utils::GateType::kShuffle, label_vector, permutation);
     
-
     // Step 4: Reconstruct label to get the actual permutation values
     // Use reconstruction gate to reveal label values
     
-    std::vector<common::utils::wire_t> label_reconstructed(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        // label_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, label_shuffled[i]);
-        label_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, label_vector[i]);
-    }
+    // std::vector<common::utils::wire_t> label_reconstructed(vec_size);
+    // for (size_t i = 0; i < vec_size; ++i) {
+    //     // label_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, label_shuffled[i]);
+    //     label_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, label_vector[i]);
+    // }
     
     // Step 5: Apply permutation using kPublicPerm
     // The permutation will be determined at runtime from reconstructed labels
@@ -117,23 +126,27 @@ common::utils::Circuit<Ring> generateCompactionCircuit(int nP, int pid, size_t v
     // Format: permutation[i] = -(label_reconstructed[i] + 1)
     // This allows the evaluator to detect (perm < 0) and read from wire (-perm - 1)
     
-    std::vector<int> dynamic_perm(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        // Encode: negative value means "read from this wire ID"
-        // We use -(wire_id + 1) to avoid confusion with wire 0
-        dynamic_perm[i] = -(static_cast<int>(label_reconstructed[i]) + 1);
-    }
+    // std::vector<int> dynamic_perm(vec_size);
+    // for (size_t i = 0; i < vec_size; ++i) {
+    //     // Encode: negative value means "read from this wire ID"
+    //     // We use -(wire_id + 1) to avoid confusion with wire 0
+    //     dynamic_perm[i] = -(static_cast<int>(label_reconstructed[i]) + 1);
+    // }
     
-    auto p_compacted = circ.addConstOpMGate(common::utils::GateType::kPublicPerm, p_shuffled, dynamic_perm);
-    auto t_compacted = circ.addConstOpMGate(common::utils::GateType::kPublicPerm, t_shuffled, dynamic_perm);
+    // auto p_compacted = circ.addConstOpMGate(common::utils::GateType::kPublicPerm, p_shuffled, dynamic_perm);
+    // auto t_compacted = circ.addConstOpMGate(common::utils::GateType::kPublicPerm, t_shuffled, dynamic_perm);
     
     // Set outputs: compacted t and p vectors
-    for (size_t i = 0; i < vec_size; ++i) {
-        circ.setAsOutput(t_compacted[i]);
-        circ.setAsOutput(p_compacted[i]);
-    }
+    // for (size_t i = 0; i < vec_size; ++i) {
+    //     circ.setAsOutput(t_compacted[i]);
+    //     circ.setAsOutput(p_compacted[i]);
+    // }
 
-   
+    // Alternative: Output original t and p vectors for verification        
+    for (size_t i = 0; i < vec_size; ++i) {
+        circ.setAsOutput(t_vector[i]);
+        circ.setAsOutput(p_vector[i]);
+    }
     
     return circ;
 }
@@ -259,7 +272,7 @@ void benchmark(const bpo::variables_map& opts) {
     }
 
     // Print first few inputs for verification
-    for (size_t i = 0; i < std::min(size_t(10), inputs.size()); ++i) {
+    for (size_t i = 0; i < std::min(size_t(20), inputs.size()); ++i) {
         std::cout << "Input wire " << input_wires[i] << " (index " << i << "): " << inputs[input_wires[i]] << std::endl;
     }
     std::cout << "Total inputs set: " << inputs.size() << std::endl;
@@ -273,7 +286,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     std::cout << "First few outputs: ";
-    for (size_t i = 0; i < std::min(size_t(10), outputs.size()); ++i) {
+    for (size_t i = 0; i < std::min(size_t(20), outputs.size()); ++i) {
         std::cout << outputs[i] << " ";
     }
     std::cout << std::endl;

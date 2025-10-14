@@ -51,12 +51,14 @@ void benchmark(const bpo::variables_map& opts) {
     auto seed = opts["seed"].as<size_t>();
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
+    auto use_pking = opts["use-pking"].as<bool>();
 
     omp_set_nested(1);
     // omp_set_num_threads(nP);
     if (nP < 10) { omp_set_num_threads(nP); }
     else { omp_set_num_threads(10); }
     std::cout << "Starting benchmarks" << std::endl;
+    std::cout << "Using " << (use_pking ? "king-based" : "direct") << " reconstruction for multiplication gates" << std::endl;
 
     std::shared_ptr<io::NetIOMP> network = nullptr;
     if (opts["localhost"].as<bool>()) {
@@ -118,7 +120,8 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << "Starting preprocessing" << std::endl;
     StatsPoint preproc_start(*network);
     // emp::PRG prg(&emp::zero_block, seed);
-    OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed);
+    int latency_us = static_cast<int>(latency * 1000);  // Convert ms to microseconds
+    OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed, latency_us, use_pking);
     auto preproc = off_eval.run(input_pid_map);
     std::cout << "Preprocessing complete" << std::endl;
     network->sync();
@@ -126,11 +129,65 @@ void benchmark(const bpo::variables_map& opts) {
 
     std::cout << "Starting online evaluation" << std::endl;
     StatsPoint online_start(*network);
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed);
-    eval.setRandomInputs();
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
+    
+    // Set specific test inputs
+    std::unordered_map<common::utils::wire_t, Ring> inputs;
+    
+    // Collect all input wires owned by this party
+    std::vector<common::utils::wire_t> input_wires;
+    for (const auto& [wire, owner] : input_pid_map) {
+        if (owner == static_cast<int>(pid)) {
+            input_wires.push_back(wire);
+        }
+    }
+    
+    // Sort to ensure consistent ordering
+    std::sort(input_wires.begin(), input_wires.end());
+    
+    // Set specific test values
+    Ring input_a = 15;  // First input
+    Ring input_b = 7;   // Second input
+    
+    std::cout << "\n=== SETTING TEST INPUTS ===" << std::endl;
+    std::cout << "Party " << pid << " setting inputs:" << std::endl;
+    
+    for (size_t i = 0; i < input_wires.size(); ++i) {
+        auto wire = input_wires[i];
+        if (i == 0) {
+            inputs[wire] = input_a;
+            std::cout << "  Wire " << wire << " (input_a) = " << input_a << std::endl;
+        } else if (i == 1) {
+            inputs[wire] = input_b;
+            std::cout << "  Wire " << wire << " (input_b) = " << input_b << std::endl;
+        }
+    }
+    
+    std::cout << "Expected result: " << input_a << " * " << input_b << " = " << (input_a * input_b) << std::endl;
+    std::cout << "========================\n" << std::endl;
+    
+    eval.setInputs(inputs);
+    
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
     }
+    
+    // Get and print outputs
+    auto outputs = eval.getOutputs();
+    std::cout << "\n=== MULTIPLICATION RESULT ===" << std::endl;
+    std::cout << "Party " << pid << " output:" << std::endl;
+    std::cout << "  Number of outputs: " << outputs.size() << std::endl;
+    if (outputs.size() > 0) {
+        std::cout << "  Output value: " << outputs[0] << std::endl;
+        std::cout << "  Expected: " << (input_a * input_b) << std::endl;
+        if (outputs[0] == (input_a * input_b)) {
+            std::cout << "  ✓ CORRECT!" << std::endl;
+        } else {
+            std::cout << "  ✗ INCORRECT - Multiplication gate error!" << std::endl;
+        }
+    }
+    std::cout << "============================\n" << std::endl;
+    
     std::cout << "Online evaluation complete" << std::endl;
     network->sync();
     StatsPoint online_end(*network);
@@ -196,7 +253,8 @@ bpo::options_description programOptions() {
         ("localhost", bpo::bool_switch(), "All parties are on same machine.")
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
-        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.");
+        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
   return desc;
 }
 // clang-format on

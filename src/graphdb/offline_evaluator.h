@@ -22,6 +22,8 @@ namespace graphdb {
 class OfflineEvaluator {
   int nP_;  
   int id_;
+  int latency_;  // Network latency in microseconds
+  bool use_pking_;  // Use king party for reconstruction
   RandGenPool rgen_;
   std::shared_ptr<io::NetIOMP> network_;
   common::utils::LevelOrderedCircuit circ_;
@@ -34,7 +36,7 @@ class OfflineEvaluator {
 
   public:
   OfflineEvaluator(int nP, int my_id, std::shared_ptr<io::NetIOMP> network,
-                   common::utils::LevelOrderedCircuit circ, int threads, int seed = 200);
+                   common::utils::LevelOrderedCircuit circ, int threads, int seed = 200, int latency = 100, bool use_pking = true);
 
   // Generate sharing of a random unknown value.
   static void randomShare(int nP, int pid, RandGenPool& rgen, AddShare<Ring>& share, TPShare<Ring>& tpShare);
@@ -48,7 +50,7 @@ class OfflineEvaluator {
   // Generate sharing of a random unknown permutation.
   static void randomPermutation(int nP, int pid, RandGenPool& rgen, std::vector<int>& pi, size_t& vec_size);
 
-  void generateShuffleDeltaVector(int nP, int pid, RandGenPool& rgen, std::vector<AddShare<Ring>>& delta,
+  void generateShuffleDeltaVector(int nP, int pid, RandGenPool& rgen, std::vector<Ring>& delta,
                                   std::vector<TPShare<Ring>>& tp_a, std::vector<TPShare<Ring>>& tp_b,
                                   std::vector<TPShare<Ring>>& tp_c, std::vector<std::vector<int>>& tp_pi_all,
                                   size_t& vec_size, std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);

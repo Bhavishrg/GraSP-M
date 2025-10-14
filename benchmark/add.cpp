@@ -16,23 +16,20 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateRecCircuit(int nP, int pid, int num_inputs, bool use_pking) {
+common::utils::Circuit<Ring> generateCircuit(int nP, int pid) {
 
-    std::cout << "Generating reconstruction circuit" << std::endl;
-    std::cout << "Reconstruction mode: " << (use_pking ? "via King Party" : "Direct") << std::endl;
+    std::cout << "Generating circuit" << std::endl;
     
     common::utils::Circuit<Ring> circ;
 
-    // Create input wires
-    std::vector<common::utils::wire_t> input_wires(num_inputs);
-    std::generate(input_wires.begin(), input_wires.end(), [&]() { return circ.newInputWire(); });
+    std::vector<common::utils::wire_t> input_vector(2);
+    std::generate(input_vector.begin(), input_vector.end(), [&]() { return circ.newInputWire(); });
 
-    // Add reconstruction gates for each input
-    std::vector<common::utils::wire_t> output_wires(num_inputs);
-    for (int i = 0; i < num_inputs; ++i) {
-        output_wires[i] = circ.addGate(common::utils::GateType::kRec, input_wires[i]);
-        circ.setAsOutput(output_wires[i]);
-    }
+
+    auto out1 = circ.addGate(common::utils::GateType::kMul, input_vector[0], input_vector[1]);
+    auto out = circ.addGate(common::utils::GateType::kAdd, out1, input_vector[0]);
+
+    circ.setAsOutput(out);
 
     return circ;
 }
@@ -46,8 +43,8 @@ void benchmark(const bpo::variables_map& opts) {
         save_file = opts["output"].as<std::string>();
     }
 
-    auto num_inputs = opts["num-inputs"].as<int>();
     auto nP = opts["num-parties"].as<int>();
+    auto iter = opts["iter"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
     auto threads = opts["threads"].as<size_t>();
@@ -57,10 +54,11 @@ void benchmark(const bpo::variables_map& opts) {
     auto use_pking = opts["use-pking"].as<bool>();
 
     omp_set_nested(1);
+    // omp_set_num_threads(nP);
     if (nP < 10) { omp_set_num_threads(nP); }
     else { omp_set_num_threads(10); }
-
-    std::cout << "Starting reconstruction benchmarks" << std::endl;
+    std::cout << "Starting benchmarks" << std::endl;
+    std::cout << "Using " << (use_pking ? "king-based" : "direct") << " reconstruction for multiplication gates" << std::endl;
 
     std::shared_ptr<io::NetIOMP> network = nullptr;
     if (opts["localhost"].as<bool>()) {
@@ -85,13 +83,12 @@ void benchmark(const bpo::variables_map& opts) {
 
     json output_data;
     output_data["details"] = {{"num_parties", nP},
-                              {"num_inputs", num_inputs},
+                              {"iterations", iter},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
                               {"seed", seed},
-                              {"repeat", repeat},
-                              {"use_pking", use_pking}};
+                              {"repeat", repeat}};
     output_data["benchmarks"] = json::array();
 
     std::cout << "--- Details ---" << std::endl;
@@ -100,11 +97,15 @@ void benchmark(const bpo::variables_map& opts) {
     }
     std::cout << std::endl;
 
+
+
     StatsPoint start(*network);
+
     network->sync();
 
-    auto circ = generateRecCircuit(nP, pid, num_inputs, use_pking).orderGatesByLevel();
+    auto circ = generateCircuit(nP, pid).orderGatesByLevel();
     network->sync();
+
 
     std::cout << "--- Circuit ---" << std::endl;
     std::cout << circ << std::endl;
@@ -112,24 +113,16 @@ void benchmark(const bpo::variables_map& opts) {
     std::unordered_map<common::utils::wire_t, int> input_pid_map;
     for (const auto& g : circ.gates_by_level[0]) {
         if (g->type == common::utils::GateType::kInp) {
-            input_pid_map[g->out] = pid;  // Each party provides their own inputs
+            input_pid_map[g->out] = 1;
         }
     }
 
     std::cout << "Starting preprocessing" << std::endl;
     StatsPoint preproc_start(*network);
+    // emp::PRG prg(&emp::zero_block, seed);
     int latency_us = static_cast<int>(latency * 1000);  // Convert ms to microseconds
-    OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed, latency_us);
+    OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed, latency_us, use_pking);
     auto preproc = off_eval.run(input_pid_map);
-    
-    // Set the viaPking flag in preprocessing data based on user option
-    for (auto& [wire, gate_preproc] : preproc.gates) {
-        auto* rec_gate = dynamic_cast<PreprocRecGate<Ring>*>(gate_preproc.get());
-        if (rec_gate != nullptr) {
-            rec_gate->viaPking = use_pking;
-        }
-    }
-    
     std::cout << "Preprocessing complete" << std::endl;
     network->sync();
     StatsPoint preproc_end(*network);
@@ -138,32 +131,69 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint online_start(*network);
     OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
     
-    // Each party sets their own inputs
+    // Set specific test inputs
     std::unordered_map<common::utils::wire_t, Ring> inputs;
+    
+    // Collect all input wires owned by this party
+    std::vector<common::utils::wire_t> input_wires;
     for (const auto& [wire, owner] : input_pid_map) {
         if (owner == static_cast<int>(pid)) {
-            // Use different values for each party: party i uses value i*100 + wire_id
-            inputs[wire] = static_cast<Ring>(pid * 100 + wire);
+            input_wires.push_back(wire);
         }
     }
+    
+    // Sort to ensure consistent ordering
+    std::sort(input_wires.begin(), input_wires.end());
+    
+    // Set specific test values
+    Ring input_a = 15;  // First input
+    Ring input_b = 7;   // Second input
+    
+    std::cout << "\n=== SETTING TEST INPUTS ===" << std::endl;
+    std::cout << "Party " << pid << " setting inputs:" << std::endl;
+    
+    for (size_t i = 0; i < input_wires.size(); ++i) {
+        auto wire = input_wires[i];
+        if (i == 0) {
+            inputs[wire] = input_a;
+            std::cout << "  Wire " << wire << " (input_a) = " << input_a << std::endl;
+        } else if (i == 1) {
+            inputs[wire] = input_b;
+            std::cout << "  Wire " << wire << " (input_b) = " << input_b << std::endl;
+        }
+    }
+    
+    std::cout << "Expected result: " << input_a << " * " << input_b << " + " << input_a << " = " << (input_a * input_b) + input_a << std::endl;
+    std::cout << "========================\n" << std::endl;
+    
     eval.setInputs(inputs);
     
-    // Evaluate circuit
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
     }
     
-    // Get outputs
-    // auto outputs = eval.getOutputs();
-    // std::cout << "Reconstruction outputs:" << std::endl;
-    // for (size_t i = 0; i < outputs.size(); ++i) {
-    //     std::cout << "  Output[" << i << "]: " << outputs[i] << std::endl;
-    // }
+    // Get and print outputs
+    auto outputs = eval.getOutputs();
+    std::cout << "\n=== MULTIPLICATION RESULT ===" << std::endl;
+    std::cout << "Party " << pid << " output:" << std::endl;
+    std::cout << "  Number of outputs: " << outputs.size() << std::endl;
+    if (outputs.size() > 0) {
+        std::cout << "  Output value: " << outputs[0] << std::endl;
+        std::cout << "  Expected: " << (input_a * input_b) + input_a << std::endl;
+        if (outputs[0] == (input_a * input_b) + input_a) {
+            std::cout << "  ✓ CORRECT!" << std::endl;
+        } else {
+            std::cout << "  ✗ INCORRECT - Addition gate error!" << std::endl;
+        }
+    }
+    std::cout << "============================\n" << std::endl;
     
+    std::cout << "Online evaluation complete" << std::endl;
     network->sync();
     StatsPoint online_end(*network);
 
     StatsPoint end(*network);
+
 
     auto preproc_rbench = preproc_end - preproc_start;
     auto online_rbench = online_end - online_start;
@@ -171,6 +201,7 @@ void benchmark(const bpo::variables_map& opts) {
     output_data["benchmarks"].push_back(preproc_rbench);
     output_data["benchmarks"].push_back(online_rbench);
     output_data["benchmarks"].push_back(total_rbench);
+
 
     size_t pre_bytes_sent = 0;
     for (const auto& val : preproc_rbench["communication"]) {
@@ -185,7 +216,7 @@ void benchmark(const bpo::variables_map& opts) {
         total_bytes_sent += val.get<int64_t>();
     }
 
-    std::cout << "--- Benchmark Results ---" << std::endl;
+    // std::cout << "--- Repetition " << r + 1 << " ---" << std::endl;
     std::cout << "preproc time: " << preproc_rbench["time"] << " ms" << std::endl;
     std::cout << "preproc sent: " << pre_bytes_sent << " bytes" << std::endl;
     std::cout << "online time: " << online_rbench["time"] << " ms" << std::endl;
@@ -213,24 +244,24 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("num-inputs,i", bpo::value<int>()->default_value(10), "Number of input wires to reconstruct.")
+        ("iter,i", bpo::value<int>()->default_value(1), "Number of iterations for message passing.")
         ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
         ("seed", bpo::value<size_t>()->default_value(200), "Value of the random seed.")
-        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).")
         ("net-config", bpo::value<std::string>(), "Path to JSON file containing network details of all parties.")
         ("localhost", bpo::bool_switch(), "All parties are on same machine.")
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
-        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.");
+        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
   return desc;
 }
 // clang-format on
 
 int main(int argc, char* argv[]) {
     auto prog_opts(programOptions());
-    bpo::options_description cmdline("Benchmark reconstruction (kRec) circuits.");
+    bpo::options_description cmdline("Benchmark online phase for multiplication gates.");
     cmdline.add(prog_opts);
     cmdline.add_options()(
       "config,c", bpo::value<std::string>(),

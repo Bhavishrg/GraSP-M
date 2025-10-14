@@ -8,6 +8,7 @@ macro(add_benchmark source_name)
     list(APPEND benchbin ${source_name})
 endmacro()
 
+add_benchmark(add)
 add_benchmark(equality)
 add_benchmark(shuffle)
 add_benchmark(mult)

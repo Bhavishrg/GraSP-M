@@ -8,9 +8,10 @@ namespace graphdb
     OnlineEvaluator::OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                                      PreprocCircuit<Ring> preproc,
                                      common::utils::LevelOrderedCircuit circ,
-                                     int threads, int seed)
+                                     int threads, int seed, int latency)
         : nP_(nP),
           id_(id),
+          latency_(latency),
           rgen_(id, seed),
           network_(std::move(network)),
           preproc_(std::move(preproc)),
@@ -23,9 +24,10 @@ namespace graphdb
     OnlineEvaluator::OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                                      PreprocCircuit<Ring> preproc,
                                      common::utils::LevelOrderedCircuit circ,
-                                     std::shared_ptr<ThreadPool> tpool, int seed)
+                                     std::shared_ptr<ThreadPool> tpool, int seed, int latency)
         : nP_(nP),
           id_(id),
+          latency_(latency),
           rgen_(id, seed),
           network_(std::move(network)),
           preproc_(std::move(preproc)),
@@ -33,7 +35,8 @@ namespace graphdb
           tpool_(std::move(tpool)),
           wires_(circ.num_wires) {}
 
-    void OnlineEvaluator::setInputs(const std::unordered_map<common::utils::wire_t, Ring> &inputs) {
+    
+          void OnlineEvaluator::setInputs(const std::unordered_map<common::utils::wire_t, Ring> &inputs) {
         // Input gates have depth 0
         for (auto &g : circ_.gates_by_level[0]) {
             if (g->type == common::utils::GateType::kInp) {
@@ -87,13 +90,13 @@ namespace graphdb
         std::vector<Ring> recon_m1(num_eqz_gates, 0);
         if (id_ != pKing) {
             network_->send(pKing, r1_send.data(), r1_send.size() * sizeof(Ring));
-            usleep(250);
+            usleep(latency_);
             network_->recv(pKing, recon_m1.data(), recon_m1.size() * sizeof(Ring));
         } else {
             std::vector<std::vector<Ring>> share_recv(nP_);
             // King party adds its own share first
             share_recv[pKing - 1] = r1_send;
-            usleep(250);
+            usleep(latency_);
             // Receive from all other parties
             #pragma omp parallel for
             for (int pid = 1; pid <= nP_; ++pid) {
@@ -148,13 +151,13 @@ namespace graphdb
         std::vector<Ring> recon_m2(num_eqz_gates, 0);
         if (id_ != pKing) {
             network_->send(pKing, share_m2.data(), share_m2.size() * sizeof(Ring));
-            usleep(250);
+            usleep(latency_);
             network_->recv(pKing, recon_m2.data(), recon_m2.size() * sizeof(Ring));
         } else {
             std::vector<std::vector<Ring>> share_recv(nP_);
             // King party adds its own share first
             share_recv[pKing - 1] = share_m2;
-            usleep(250);
+            usleep(latency_);
             // Receive from all other parties
             #pragma omp parallel for
             for (int pid = 1; pid <= nP_; ++pid) {
@@ -216,13 +219,13 @@ namespace graphdb
             // Reconstruction via king party
             if (id_ != pKing) {
                 network_->send(pKing, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
-                usleep(250);
+                usleep(latency_);
                 network_->recv(pKing, reconstructed.data(), reconstructed.size() * sizeof(Ring));
             } else {
                 std::vector<std::vector<Ring>> share_recv(nP_);
                 // King party adds its own share first
                 share_recv[pKing - 1] = shares_to_send;
-                usleep(250);
+                usleep(latency_);
                 // Receive from all other parties
                 #pragma omp parallel for
                 for (int pid = 1; pid <= nP_; ++pid) {
@@ -260,7 +263,7 @@ namespace graphdb
                 }
             }
             
-            usleep(250);
+            usleep(latency_);
             
             // Receive shares from all other parties
             #pragma omp parallel for
@@ -289,34 +292,36 @@ namespace graphdb
 
 
     void OnlineEvaluator::shuffleEvaluate(const std::vector<common::utils::SIMDOGate> &shuffle_gates) {
-        if (id_ == 0) { return; }
+        if (id_ == 0 || shuffle_gates.empty()) { return; }
+
         std::vector<Ring> z_all;
         std::vector<std::vector<Ring>> z_sum;
         size_t total_comm = 0;
 
-        for (auto &gate : shuffle_gates) {
+        for (const auto &gate : shuffle_gates) {
             auto *pre_shuffle = static_cast<PreprocShuffleGate<Ring> *>(preproc_.gates[gate.out].get());
             size_t vec_size = gate.in.size();
             total_comm += vec_size;
             std::vector<Ring> z(vec_size, 0);
-            if (id_ != 1) {
-                for (int i = 0; i < vec_size; ++i) {
-                    z[i] = wires_[gate.in[i]] - pre_shuffle->a[i].valueAt();
-                }
-                z_all.insert(z_all.end(), z.begin(), z.end());
-            } else {
-                z_sum.push_back(z);
+            
+            for (int i = 0; i < vec_size; ++i) {
+                z[i] = wires_[gate.in[i]] + pre_shuffle->a[i].valueAt();
             }
+            z_sum.push_back(z);
         }
-
+        
         if (id_ == 1) {
-            usleep(250);
+            // Party 1 collects z values from all parties
             std::vector<std::vector<Ring>> z_recv_all(nP_);
+            
             #pragma omp parallel for
             for (int pid = 2; pid <= nP_; ++pid) {
                 z_recv_all[pid - 1] = std::vector<Ring>(total_comm);
                 network_->recv(pid, z_recv_all[pid - 1].data(), z_recv_all[pid - 1].size() * sizeof(Ring));
             }
+            usleep(latency_);
+
+            // Aggregate received z values
             for (int pid = 1; pid < nP_; ++pid) {
                 size_t idx_vec = 0;
                 for (int idx_gate = 0; idx_gate < shuffle_gates.size(); ++idx_gate) {
@@ -329,27 +334,40 @@ namespace graphdb
                 }
             }
 
+
             z_all.reserve(total_comm);
+
             for (int idx_gate = 0; idx_gate < shuffle_gates.size(); ++idx_gate) {
                 auto *pre_shuffle = static_cast<PreprocShuffleGate<Ring> *>(preproc_.gates[shuffle_gates[idx_gate].out].get());
                 size_t vec_size = shuffle_gates[idx_gate].in.size();
                 std::vector<Ring> z(vec_size);
+                #pragma omp parallel for
                 for (int i = 0; i < vec_size; ++i) {
-                    z[i] = z_sum[idx_gate][pre_shuffle->pi[i]] + wires_[shuffle_gates[idx_gate].in[pre_shuffle->pi[i]]]
-                           - pre_shuffle->c[i].valueAt();
-                    wires_[shuffle_gates[idx_gate].outs[i]] = pre_shuffle->b[i].valueAt();
+                    z[i] = z_sum[idx_gate][pre_shuffle->pi[i]] + pre_shuffle->b[pre_shuffle->pi[i]].valueAt();
+                    wires_[shuffle_gates[idx_gate].outs[i]] = pre_shuffle->c[i].valueAt();
                 }
                 z_all.insert(z_all.end(), z.begin(), z.end());
             }
             network_->send(2, z_all.data(), z_all.size() * sizeof(Ring));
+
         } else {
+
+            // Flatten z_sum into z_all before sending
+            z_all.clear();
+            z_all.reserve(total_comm);
+            for (const auto& z_vec : z_sum) {
+                z_all.insert(z_all.end(), z_vec.begin(), z_vec.end());
+            }
+            
             network_->send(1, z_all.data(), z_all.size() * sizeof(Ring));
             network_->flush(1);
+
 
             z_all.clear();
             z_all.resize(total_comm);
             network_->recv(id_ - 1, z_all.data(), z_all.size() * sizeof(Ring));
-            usleep(250);
+            usleep(latency_);
+
             for (int idx_gate = 0, idx_vec = 0; idx_gate < shuffle_gates.size(); ++idx_gate) {
                 auto *pre_shuffle = static_cast<PreprocShuffleGate<Ring> *>(preproc_.gates[shuffle_gates[idx_gate].out].get());
                 size_t vec_size = shuffle_gates[idx_gate].in.size();
@@ -357,11 +375,11 @@ namespace graphdb
                 std::vector<Ring> z_send(vec_size);
                 for (int i = 0; i < vec_size; ++i) {
                     if (id_ != nP_) {
-                        z_send[i] = z[pre_shuffle->pi[i]] - pre_shuffle->c[i].valueAt();
-                        wires_[shuffle_gates[idx_gate].outs[i]] = pre_shuffle->b[i].valueAt();
+                        z_send[i] = z[pre_shuffle->pi[i]] + pre_shuffle->b[pre_shuffle->pi[i]].valueAt();
+                        wires_[shuffle_gates[idx_gate].outs[i]] = pre_shuffle->c[i].valueAt();
                     } else {
-                        z_send[i] = z[pre_shuffle->pi[i]] + pre_shuffle->delta[i].valueAt();
-                        wires_[shuffle_gates[idx_gate].outs[i]] = z_send[i];
+                        z_send[i] = z[pre_shuffle->pi[i]] + pre_shuffle->b[pre_shuffle->pi[i]].valueAt() - pre_shuffle->delta[i];
+                        wires_[shuffle_gates[idx_gate].outs[i]] = z_send[i] + pre_shuffle->c[i].valueAt();
                     }
                     z_all[idx_vec++] = z_send[i];
                 }
@@ -372,6 +390,8 @@ namespace graphdb
         }
     }
 
+
+        
     void OnlineEvaluator::permAndShEvaluate(const std::vector<common::utils::SIMDOGate> &permAndSh_gates) {
         if (id_ == 0) { return; }
         #pragma omp parallel sections
@@ -398,7 +418,7 @@ namespace graphdb
 
             #pragma omp section
             {
-                usleep(250);
+                usleep(latency_);
                 for (int idx_gate = 0; idx_gate < permAndSh_gates.size(); ++idx_gate) {
                     if (id_ == permAndSh_gates[idx_gate].owner) {
                         auto *pre_permAndSh = static_cast<PreprocPermAndShGate<Ring> *>(preproc_.gates[permAndSh_gates[idx_gate].out].get());
@@ -432,234 +452,251 @@ namespace graphdb
     }
 
     void OnlineEvaluator::multEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates) {
-
-        std::vector<Ring> mult_vals;
         if (id_ == 0) { return; }
-        size_t idx_mult = 0;
-        for (auto &mult_gate : mult_gates) {
-            auto *pre_out = static_cast<PreprocMultGate<Ring> *>(preproc_.gates[mult_gate.out].get());
-            auto u = pre_out->triple_a.valueAt() - wires_[mult_gate.in1];
-            auto v = pre_out->triple_b.valueAt() - wires_[mult_gate.in2];
-            mult_vals.push_back(u);
-            mult_vals.push_back(v);
-            break;
-        }
-
-        size_t total_comm_send = mult_vals.size();
-        size_t total_comm_recv = nP_ * total_comm_send;
-        std::vector<Ring> online_comm_send;
-        online_comm_send.reserve(total_comm_send);
-        std::vector<Ring> online_comm_recv;
-        online_comm_recv.reserve(total_comm_recv);
-        online_comm_send.insert(online_comm_send.end(), mult_vals.begin(), mult_vals.end());
-
-        for (int pid = 1; pid <= nP_; ++pid) {
-            if (pid != id_) {
-                network_->send(pid, online_comm_send.data(), sizeof(Ring) * online_comm_send.size());
-            }
-        }
-
-        usleep(250);
-        std::vector<std::vector<Ring>> online_comm_recv_party(nP_);
+        
+        size_t num_mult_gates = mult_gates.size();
+        if (num_mult_gates == 0) { return; }
+        
+        int pKing = 1; // Designated king party
+        
+        // Check if we should use king-based reconstruction (from first mult gate's preproc)
+        auto *pre_first = static_cast<PreprocMultGate<Ring> *>(preproc_.gates[mult_gates[0].out].get());
+        bool via_pking = pre_first->viaPking;
+        
+        // Step 1: Compute shares of u and v for each multiplication gate
+        // For multiplication z = x * y using Beaver triples (a, b, c) where c = a * b:
+        // - u = x - a (each party computes their share)
+        // - v = y - b (each party computes their share)
+        // - Reconstruct u and v to get actual values
+        // - Compute z = u*v + u*b + v*a + c
+        
+        std::vector<Ring> u_shares(num_mult_gates);
+        std::vector<Ring> v_shares(num_mult_gates);
+        
         #pragma omp parallel for
-        for (int pid = 1; pid <= nP_; ++pid) {
-            if (pid != id_) {
-                online_comm_recv_party[pid - 1] = std::vector<Ring>(total_comm_send);
-                network_->recv(pid, online_comm_recv_party[pid - 1].data(), sizeof(Ring) * online_comm_recv_party[pid - 1].size());
-            }
-        }
-        for (int pid = 0; pid < nP_; ++pid) {
-            if (pid != id_ - 1) {
-                online_comm_recv.insert(online_comm_recv.end(), online_comm_recv_party[pid].begin(), online_comm_recv_party[pid].end());
-            } else {
-                online_comm_recv.insert(online_comm_recv.end(), online_comm_send.begin(), online_comm_send.end());
-            }
-        }
-
-        size_t mult_all_recv = nP_ * mult_vals.size();
-        std::vector<Ring> mult_all(mult_all_recv);
-        for (int i = 0, j = 0, pid = 0; i < mult_all_recv;) {
-            mult_all[i++] = online_comm_recv[pid * total_comm_send + 2 * j];
-            mult_all[i++] = online_comm_recv[pid * total_comm_send + 2 * j + 1];
-            j += (pid + 1) / nP_;
-            pid = (pid + 1) % nP_;
-        }
-
-        for (auto &mult_gate : mult_gates) {
+        for (size_t i = 0; i < num_mult_gates; ++i) {
+            auto &mult_gate = mult_gates[i];
             auto *pre_out = static_cast<PreprocMultGate<Ring> *>(preproc_.gates[mult_gate.out].get());
-            Ring u = Ring(0);
-            Ring v = Ring(0);
+            
+            // Compute this party's share of u and v
+            u_shares[i] = wires_[mult_gate.in1] - pre_out->triple_a.valueAt();
+            v_shares[i] = wires_[mult_gate.in2] - pre_out->triple_b.valueAt();
+        }
+        
+        // Step 2: Reconstruct u and v values
+        std::vector<Ring> u_reconstructed(num_mult_gates, 0);
+        std::vector<Ring> v_reconstructed(num_mult_gates, 0);
+        
+        // Prepare shares to send (interleaved: u0, v0, u1, v1, ...)
+        std::vector<Ring> shares_to_send(2 * num_mult_gates);
+        for (size_t i = 0; i < num_mult_gates; ++i) {
+            shares_to_send[2*i] = u_shares[i];
+            shares_to_send[2*i + 1] = v_shares[i];
+        }
+        
+        if (via_pking) {
+            // ============ Reconstruction via King Party ============
+            if (id_ != pKing) {
+                // Non-king parties: send shares to king, receive reconstructed values
+                network_->send(pKing, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
+                usleep(latency_);
+                
+                std::vector<Ring> reconstructed(2 * num_mult_gates);
+                network_->recv(pKing, reconstructed.data(), reconstructed.size() * sizeof(Ring));
+                
+                // Unpack reconstructed values
+                for (size_t i = 0; i < num_mult_gates; ++i) {
+                    u_reconstructed[i] = reconstructed[2*i];
+                    v_reconstructed[i] = reconstructed[2*i + 1];
+                }
+            } else {
+                // King party: collect all shares, reconstruct, broadcast
+                std::vector<std::vector<Ring>> share_recv(nP_);
+                share_recv[pKing - 1] = shares_to_send;
+                
+                usleep(latency_);
+                
+                // Receive shares from all other parties
+                #pragma omp parallel for
+                for (int pid = 1; pid <= nP_; ++pid) {
+                    if (pid != pKing) {
+                        share_recv[pid - 1].resize(2 * num_mult_gates);
+                        network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
+                    }
+                }
+                
+                // Sum all shares to reconstruct u and v
+                for (int pid = 0; pid < nP_; ++pid) {
+                    for (size_t i = 0; i < num_mult_gates; ++i) {
+                        u_reconstructed[i] += share_recv[pid][2*i];
+                        v_reconstructed[i] += share_recv[pid][2*i + 1];
+                    }
+                }
+                
+                // Pack reconstructed values for broadcasting
+                std::vector<Ring> reconstructed(2 * num_mult_gates);
+                for (size_t i = 0; i < num_mult_gates; ++i) {
+                    reconstructed[2*i] = u_reconstructed[i];
+                    reconstructed[2*i + 1] = v_reconstructed[i];
+                }
+                
+                // Broadcast reconstructed values to all other parties
+                #pragma omp parallel for
+                for (int pid = 1; pid <= nP_; ++pid) {
+                    if (pid != pKing) {
+                        network_->send(pid, reconstructed.data(), reconstructed.size() * sizeof(Ring));
+                        network_->flush(pid);
+                    }
+                }
+            }
+        } else {
+            // ============ Direct Reconstruction (All-to-All) ============
+            std::vector<std::vector<Ring>> share_recv(nP_);
+            share_recv[id_ - 1] = shares_to_send;
+            
+            // Send shares to all other parties
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != id_) {
+                    network_->send(pid, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
+                }
+            }
+            
+            usleep(latency_);
+            
+            // Receive shares from all other parties
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != id_) {
+                    share_recv[pid - 1].resize(2 * num_mult_gates);
+                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
+                }
+            }
+            
+            // Sum all shares to reconstruct u and v
+            for (int pid = 0; pid < nP_; ++pid) {
+                for (size_t i = 0; i < num_mult_gates; ++i) {
+                    u_reconstructed[i] += share_recv[pid][2*i];
+                    v_reconstructed[i] += share_recv[pid][2*i + 1];
+                }
+            }
+        }
+        
+        // Step 3: Compute multiplication result using Beaver triple formula
+        // z = u*v + u*b + v*a + c (where only c is a share, rest are public values)
+        #pragma omp parallel for
+        for (size_t i = 0; i < num_mult_gates; ++i) {
+            auto &mult_gate = mult_gates[i];
+            auto *pre_out = static_cast<PreprocMultGate<Ring> *>(preproc_.gates[mult_gate.out].get());
+            
+            Ring u = u_reconstructed[i];
+            Ring v = v_reconstructed[i];
             Ring a = pre_out->triple_a.valueAt();
             Ring b = pre_out->triple_b.valueAt();
             Ring c = pre_out->triple_c.valueAt();
-            for (int i = 1; i <= nP_; ++i) {
-                u += mult_vals[idx_mult++];
-                v += mult_vals[idx_mult++];
+            
+            // Beaver triple formula: z = u*v + u*b + v*a + c
+            if (id_ == 1){
+                wires_[mult_gate.out] = u * v + u * b + v * a + c;
             }
-            wires_[mult_gate.out] = u * v + u * b + v * a + c;
-            break;
+            else{
+                wires_[mult_gate.out] = u * b + v * a + c;
+            }
         }
-
-
     }
 
     void OnlineEvaluator::evaluateGatesAtDepth(size_t depth) {
         if (id_ == 0) { return; }
-        size_t mult_num = 0;
-        size_t dotp_num = 0;
-        size_t eqz_num = 0;
-        size_t rec_num = 0;
-        size_t shuffle_num = 0;
-        size_t permAndSh_num = 0;
 
-        
         std::vector<common::utils::FIn2Gate> mult_gates;
         std::vector<common::utils::FIn1Gate> eqz_gates;
         std::vector<common::utils::FIn1Gate> rec_gates;
         std::vector<common::utils::SIMDOGate> shuffle_gates;
         std::vector<common::utils::SIMDOGate> permAndSh_gates;
 
+        // First pass: collect the multi-round gates so their batched handlers can run once.
         for (auto &gate : circ_.gates_by_level[depth]) {
             switch (gate->type) {
-
-                case common::utils::GateType::kAdd: {
-                    auto *g = static_cast<common::utils::FIn2Gate *>(gate.get());
-                    wires_[g->out] = wires_[g->in1] + wires_[g->in2];
-                    break;
-                }
-
-                case common::utils::GateType::kSub: {
-                    auto *g = static_cast<common::utils::FIn2Gate *>(gate.get());
-                    wires_[g->out] = wires_[g->in1] - wires_[g->in2];
-                    break;
-                }
-
-                case common::utils::GateType::kConstAdd: {
-                    auto *g = static_cast<common::utils::ConstOpGate<Ring> *>(gate.get());
-                    if (id_ == 1) { wires_[g->out] = wires_[g->in] + g->cval; } // Only 1 party needs to add the constant
-                    break;
-                }
-
-                case common::utils::GateType::kConstMul: {
-                    auto *g = static_cast<common::utils::ConstOpGate<Ring> *>(gate.get());
-                    wires_[g->out] = wires_[g->in] * g->cval;
-                    break;
-                }
-
-                case common::utils::GateType::kPublicPerm: {
-                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
-                    auto vec_len = g->in.size();
-                    for (int i = 0; i < vec_len; ++i) {
-                        auto idx_perm = g->permutation[0][i];
-                        wires_[g->outs[idx_perm]] = wires_[g->in[i]];
-                    }
-                    break;
-                }
-
                 case common::utils::GateType::kMul: {
                     auto *g = static_cast<common::utils::FIn2Gate *>(gate.get());
                     mult_gates.push_back(*g);
-                    mult_num++;
                     break;
                 }
-
-                case ::common::utils::GateType::kEqz: {
+                case common::utils::GateType::kEqz: {
                     auto *g = static_cast<common::utils::FIn1Gate *>(gate.get());
                     eqz_gates.push_back(*g);
-                    eqz_num++;
                     break;
                 }
-
                 case common::utils::GateType::kRec: {
                     auto *g = static_cast<common::utils::FIn1Gate *>(gate.get());
                     rec_gates.push_back(*g);
-                    rec_num++;
                     break;
                 }
-
                 case common::utils::GateType::kShuffle: {
                     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
                     shuffle_gates.push_back(*g);
-                    shuffle_num++;
                     break;
                 }
-
                 case common::utils::GateType::kPermAndSh: {
                     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
                     permAndSh_gates.push_back(*g);
-                    permAndSh_num++;
                     break;
                 }
-
                 default:
                     break;
             }
         }
 
+        if (!mult_gates.empty()) { multEvaluate(mult_gates); }
+        if (!eqz_gates.empty()) { eqzEvaluate(eqz_gates); }
+        if (!rec_gates.empty()) { recEvaluate(rec_gates); }
+        if (!shuffle_gates.empty()) { shuffleEvaluate(shuffle_gates); }
+        if (!permAndSh_gates.empty()) { permAndShEvaluate(permAndSh_gates); }
 
-
-        if (mult_num > 0) {
-            multEvaluate(mult_gates);
+        // Second pass: handle locally evaluable gates.
+        for (auto &gate : circ_.gates_by_level[depth]) {
+            switch (gate->type) {
+                case common::utils::GateType::kAdd: {
+                    auto *g = static_cast<common::utils::FIn2Gate *>(gate.get());
+                    wires_[g->out] = wires_[g->in1] + wires_[g->in2];
+                    break;
+                }
+                case common::utils::GateType::kSub: {
+                    auto *g = static_cast<common::utils::FIn2Gate *>(gate.get());
+                    wires_[g->out] = wires_[g->in1] - wires_[g->in2];
+                    break;
+                }
+                case common::utils::GateType::kConstAdd: {
+                    auto *g = static_cast<common::utils::ConstOpGate<Ring> *>(gate.get());
+                    if (id_ == 1) {
+                        wires_[g->out] = wires_[g->in] + g->cval;
+                    } else {
+                        wires_[g->out] = wires_[g->in];
+                    }
+                    break;
+                }
+                case common::utils::GateType::kConstMul: {
+                    auto *g = static_cast<common::utils::ConstOpGate<Ring> *>(gate.get());
+                    wires_[g->out] = wires_[g->in] * g->cval;
+                    break;
+                }
+                case common::utils::GateType::kPublicPerm: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    auto vec_len = g->in.size();
+                    for (int i = 0; i < vec_len; ++i) {
+                        auto idx_perm = g->permutation[0][i];
+                        if (idx_perm < 0) {
+                            common::utils::wire_t wire_id = static_cast<common::utils::wire_t>(-idx_perm - 1);
+                            idx_perm = static_cast<int>(wires_[wire_id]);
+                        }
+                        wires_[g->outs[idx_perm]] = wires_[g->in[i]];
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
         }
-
-        if (eqz_num > 0) {
-            eqzEvaluate(eqz_gates);
-        }
-
-        if (rec_num > 0) {
-            recEvaluate(rec_gates);
-        }
-
-        if (shuffle_num > 0) {
-            shuffleEvaluate(shuffle_gates);
-        }
-
-        if (permAndSh_num > 0) {
-            permAndShEvaluate(permAndSh_gates);
-        }
-
-        // evaluateGatesAtDepthPartySend(depth, mult_vals);
-        // size_t total_comm_send = mult_vals.size();
-        // size_t total_comm_recv = nP_ * total_comm_send;
-        // std::vector<Ring> online_comm_send;
-        // online_comm_send.reserve(total_comm_send);
-        // std::vector<Ring> online_comm_recv;
-        // online_comm_recv.reserve(total_comm_recv);
-        // online_comm_send.insert(online_comm_send.end(), mult_vals.begin(), mult_vals.end());
-
-        // for (int pid = 1; pid <= nP_; ++pid) {
-        //     if (pid != id_) {
-        //         network_->send(pid, online_comm_send.data(), sizeof(Ring) * online_comm_send.size());
-        //     }
-        // }
-
-        // usleep(250);
-        // std::vector<std::vector<Ring>> online_comm_recv_party(nP_);
-        // #pragma omp parallel for
-        // for (int pid = 1; pid <= nP_; ++pid) {
-        //     if (pid != id_) {
-        //         online_comm_recv_party[pid - 1] = std::vector<Ring>(total_comm_send);
-        //         network_->recv(pid, online_comm_recv_party[pid - 1].data(), sizeof(Ring) * online_comm_recv_party[pid - 1].size());
-        //     }
-        // }
-        // for (int pid = 0; pid < nP_; ++pid) {
-        //     if (pid != id_ - 1) {
-        //         online_comm_recv.insert(online_comm_recv.end(), online_comm_recv_party[pid].begin(), online_comm_recv_party[pid].end());
-        //     } else {
-        //         online_comm_recv.insert(online_comm_recv.end(), online_comm_send.begin(), online_comm_send.end());
-        //     }
-        // }
-
-        // size_t mult_all_recv = nP_ * mult_vals.size();
-        // std::vector<Ring> mult_all(mult_all_recv);
-        // for (int i = 0, j = 0, pid = 0; i < mult_all_recv;) {
-        //     mult_all[i++] = online_comm_recv[pid * total_comm_send + 2 * j];
-        //     mult_all[i++] = online_comm_recv[pid * total_comm_send + 2 * j + 1];
-        //     j += (pid + 1) / nP_;
-        //     pid = (pid + 1) % nP_;
-        // }
-
-        // evaluateGatesAtDepthPartyRecv(depth, mult_all);
     }
 
     std::vector<Ring> OnlineEvaluator::getOutputs() {
@@ -678,7 +715,7 @@ namespace graphdb
                     network_->send(pid, output_shares[id_ - 1].data(), output_shares[id_ - 1].size() * sizeof(Ring));
                 }
             }
-            usleep(250);
+            usleep(latency_);
             #pragma omp parallel for
             for (int pid = 1; pid <= nP_; ++pid) {
                 if (pid != id_) {

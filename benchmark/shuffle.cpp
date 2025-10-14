@@ -20,32 +20,33 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
 
     std::cout << "Generating circuit" << std::endl;
 
-    std::vector<std::vector<int>> permutation;
-    std::vector<int> tmp_perm(vec_size);
-    for (int i = 0; i < vec_size; ++i) {
-        tmp_perm[i] = i;
+    // Note: Permutations will be generated randomly during preprocessing
+    // Here we just pass placeholder identity permutations
+    std::vector<int> base_perm(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        base_perm[i] = static_cast<int>(i);
     }
-    permutation.push_back(tmp_perm);
+    std::vector<std::vector<int>> permutation;
+    permutation.push_back(base_perm);
     if (pid == 0) {
         for (int i = 1; i < nP; ++i) {
-            permutation.push_back(tmp_perm);
+            permutation.push_back(base_perm);
         }
     }
+
     
+
     common::utils::Circuit<Ring> circ;
 
     std::vector<common::utils::wire_t> input_vector(vec_size);
     std::generate(input_vector.begin(), input_vector.end(), [&]() { return circ.newInputWire(); });
 
 
-    // shuffle
     auto tmp = circ.addMGate(common::utils::GateType::kShuffle, input_vector, permutation);
-    std::vector<common::utils::wire_t> output_vector(vec_size);
-    for (int i = 0; i < vec_size; ++i){
-        output_vector[i] = tmp[i];
-        circ.setAsOutput(output_vector[i]);
+    for (size_t i = 0; i < vec_size; ++i) {
+        circ.setAsOutput(tmp[i]);
     }
-    
+
     return circ;
 }
 
@@ -135,7 +136,8 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << "Starting preprocessing" << std::endl;
     StatsPoint preproc_start(*network);
     // emp::PRG prg(&emp::zero_block, seed);
-    OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed);
+    int latency_us = static_cast<int>(latency * 1000);  // Convert ms to microseconds
+    OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed, latency_us);
     auto preproc = off_eval.run(input_pid_map);
     std::cout << "Preprocessing complete" << std::endl;
     network->sync();
@@ -143,11 +145,73 @@ void benchmark(const bpo::variables_map& opts) {
 
     std::cout << "Starting online evaluation" << std::endl;
     StatsPoint online_start(*network);
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed);
-    eval.setRandomInputs();
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
+    
+    std::unordered_map<common::utils::wire_t, Ring> inputs;
+    std::vector<common::utils::wire_t> input_wires;
+    input_wires.reserve(input_pid_map.size());
+    for (const auto& [wire, owner] : input_pid_map) {
+        if (owner == static_cast<int>(pid)) {
+            input_wires.push_back(wire);
+        }
+    }
+    std::sort(input_wires.begin(), input_wires.end());
+
+    std::vector<Ring> input_values(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        input_values[i] = static_cast<Ring>(i + 1);  // deterministic payload
+    }
+
+    if (!input_wires.empty()) {
+        std::cout << "\n=== SETTING TEST INPUTS ===" << std::endl;
+        std::cout << "Party " << pid << " setting inputs:" << std::endl;
+        for (size_t idx = 0; idx < input_wires.size(); ++idx) {
+            auto wire = input_wires[idx];
+            inputs[wire] = input_values[idx];
+            std::cout << "  Wire " << wire << " = " << input_values[idx] << std::endl;
+        }
+        std::cout << "Note: Shuffle uses random permutations generated during preprocessing" << std::endl;
+        std::cout << "========================\n" << std::endl;
+    }
+
+    eval.setInputs(inputs);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
     }
+
+    auto outputs = eval.getOutputs();
+
+    std::cout << "\n=== SHUFFLE RESULT ===" << std::endl;
+    std::cout << "Party " << pid << " reconstructed outputs:" << std::endl;
+    std::cout << "  Number of outputs: " << outputs.size() << std::endl;
+    
+    // Verify output is a permutation of input
+    std::vector<Ring> sorted_inputs = input_values;
+    std::vector<Ring> sorted_outputs = outputs;
+    std::sort(sorted_inputs.begin(), sorted_inputs.end());
+    std::sort(sorted_outputs.begin(), sorted_outputs.end());
+    
+    bool is_valid_permutation = (sorted_inputs == sorted_outputs);
+    
+    std::cout << "  Input:  [";
+    for (size_t i = 0; i < input_values.size(); ++i) {
+        std::cout << input_values[i] << (i + 1 == input_values.size() ? "" : ", ");
+    }
+    std::cout << "]" << std::endl;
+    
+    std::cout << "  Output: [";
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        std::cout << outputs[i] << (i + 1 == outputs.size() ? "" : ", ");
+    }
+    std::cout << "]" << std::endl;
+    
+    if (is_valid_permutation) {
+        std::cout << "  ✓ SHUFFLE CORRECT - Output is a valid permutation of input" << std::endl;
+    } else {
+        std::cout << "  ✗ SHUFFLE INCORRECT - Output is NOT a valid permutation of input" << std::endl;
+    }
+    std::cout << "============================\n" << std::endl;
+
     std::cout << "Online evaluation complete" << std::endl;
     network->sync();
     StatsPoint online_end(*network);
@@ -214,7 +278,8 @@ bpo::options_description programOptions() {
         ("localhost", bpo::bool_switch(), "All parties are on same machine.")
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
-        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.");
+        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
   return desc;
 }
 // clang-format on
