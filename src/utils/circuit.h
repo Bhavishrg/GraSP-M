@@ -33,6 +33,7 @@ enum GateType {
   kPublicPerm,
   kCompact,
   kGroupwiseIndex,
+  kGroupwisePropagate,
   kInvalid,
   NumGates
 };
@@ -200,43 +201,6 @@ class Circuit {
     return output;
   }
 
-  // Function to add a gate with fan-in 3.
-  // wire_t addGate(GateType type, wire_t input1, wire_t input2, wire_t input3) {
-  //   if (type != GateType::kMul3) {
-  //     throw std::invalid_argument("Invalid gate type.");
-  //   }
-
-  //   if (!isWireValid(input1) || !isWireValid(input2) || !isWireValid(input3)) {
-  //     throw std::invalid_argument("Invalid wire ID.");
-  //   }
-
-  //   wire_t output = num_wires;
-  //   gates_.push_back(std::make_shared<FIn3Gate>(type, input1, input2, input3, output));
-  //   num_wires += 1;
-
-  //   return output;
-  // }
-
-  // Function to add a gate with fan-in 4.
-  // wire_t addGate(GateType type, wire_t input1, wire_t input2, 
-  //                               wire_t input3, wire_t input4) {
-  //   if (type != GateType::kMul4) {
-  //     throw std::invalid_argument("Invalid gate type.");
-  //   }
-
-  //   if (!isWireValid(input1) || !isWireValid(input2) 
-  //       || !isWireValid(input3) || !isWireValid(input4)) {
-  //     throw std::invalid_argument("Invalid wire ID.");
-  //   }
-
-  //   wire_t output = num_wires;
-  //   gates_.push_back(std::make_shared<FIn4Gate>(type, input1, input2, 
-  //                                         input3, input4, output));
-  //   num_wires += 1;
-
-  //   return output;
-  // }
-
   // Function to add a gate with one input from a wire and a second constant
   // input.
   wire_t addConstOpGate(GateType type, wire_t wid, R cval) {
@@ -271,29 +235,6 @@ class Circuit {
 
     return output;
   }
-
-  // Function to add a multiple fan-in gate.
-  // wire_t addGate(GateType type, const std::vector<wire_t>& input1,
-  //                const std::vector<wire_t>& input2) {
-  //   if (type != GateType::kDotprod && type != GateType::kTrdotp) {
-  //     throw std::invalid_argument("Invalid gate type.");
-  //   }
-
-  //   if (input1.size() != input2.size()) {
-  //     throw std::invalid_argument("Expected same length inputs.");
-  //   }
-
-  //   for (size_t i = 0; i < input1.size(); ++i) {
-  //     if (!isWireValid(input1[i]) || !isWireValid(input2[i])) {
-  //       throw std::invalid_argument("Invalid wire ID.");
-  //     }
-  //   }
-
-  //   wire_t output = num_wires;
-  //   gates_.push_back(std::make_shared<SIMDGate>(type, input1, input2, output));
-  //   num_wires += 1;
-  //   return output;
-  // }
 
   // Function to add a multiple in + out gate.
   std::vector<wire_t> addMGate(GateType type, const std::vector<wire_t>& input, const std::vector<std::vector<int>> &permutation,
@@ -354,39 +295,7 @@ class Circuit {
     return output;
   }
 
-  // Function to add a multiple in + out gate.
-  // std::vector<std::vector<wire_t>> addMOGate(GateType type, const std::vector<wire_t>& input, const std::vector<std::vector<int>> &permutation,
-  //                                            int nP) {
-  //   if (type != GateType::kAmortzdPnS) {
-  //     throw std::invalid_argument("Invalid gate type.");
-  //   }
 
-  //   for (size_t i = 0; i < input.size(); i++) {
-  //     if (!isWireValid(input[i])) {
-  //       throw std::invalid_argument("Invalid wire ID.");
-  //     }
-  //   }
-
-  //   if (permutation.size() == 0) {
-  //     throw std::invalid_argument("No permutation passed.");
-  //   }
-
-  //   for (size_t i = 0; i < permutation.size(); ++i) {
-  //     if (input.size() != permutation[i].size()) {
-  //       throw std::invalid_argument("Permutation size mismatch.");
-  //     }
-  //   }
-
-  //   std::vector<std::vector<wire_t>> output(nP, std::vector<wire_t>(input.size()));
-  //   for (int pid = 0; pid < nP; ++pid) {
-  //     for (int i = 0; i < input.size(); i++) {
-  //       output[pid][i] = pid * nP + i + num_wires;
-  //     }
-  //   }
-  //   gates_.push_back(std::make_shared<SIMDMOGate>(type, 0, input, output, permutation));
-  //   num_wires += nP * input.size();
-  //   return output;
-  // }
 
   // Add a Group-wise Index gate
   // Takes key vector (binary) and value vector, returns (ind, key, v)
@@ -442,6 +351,69 @@ class Circuit {
     num_wires += 3 * vec_size;
     
     return {output_ind, output_key, output_v};
+  }
+
+  // Add a Group-wise Propagate gate
+  // Takes T1 (key1, v1) and T2 (key2), returns (key2, v_out)
+  // where v_out propagates values from T1 based on group structure in T2
+  std::pair<std::vector<wire_t>, std::vector<wire_t>> addGroupwisePropagateGate(
+      const std::vector<wire_t>& key1_vector,
+      const std::vector<wire_t>& v1_vector,
+      const std::vector<wire_t>& key2_vector,
+      const std::vector<std::vector<int>>& permutation) {
+    
+    size_t t1_vec_size = key1_vector.size();
+    size_t t2_vec_size = key2_vector.size();
+    
+    if (v1_vector.size() != t1_vec_size) {
+      throw std::invalid_argument("Value vector must have the same size as key1 vector.");
+    }
+    
+    // Validate input wires
+    for (size_t i = 0; i < t1_vec_size; i++) {
+      if (!isWireValid(key1_vector[i])) {
+        throw std::invalid_argument("Invalid wire ID in key1_vector.");
+      }
+      if (!isWireValid(v1_vector[i])) {
+        throw std::invalid_argument("Invalid wire ID in v1_vector.");
+      }
+    }
+    for (size_t i = 0; i < t2_vec_size; i++) {
+      if (!isWireValid(key2_vector[i])) {
+        throw std::invalid_argument("Invalid wire ID in key2_vector.");
+      }
+    }
+    
+    // Create output wires: t2_vec_size for key2, t2_vec_size for v_out
+    std::vector<wire_t> output_key2(t2_vec_size);
+    std::vector<wire_t> output_v(t2_vec_size);
+    
+    for (size_t i = 0; i < t2_vec_size; i++) {
+      output_key2[i] = num_wires + i;
+      output_v[i] = num_wires + t2_vec_size + i;
+    }
+    
+    // Create input vector [key1_0,...,key1_n1, v1_0,...,v1_n1, key2_0,...,key2_n2]
+    std::vector<wire_t> input(2 * t1_vec_size + t2_vec_size);
+    for (size_t i = 0; i < t1_vec_size; i++) {
+      input[i] = key1_vector[i];
+      input[t1_vec_size + i] = v1_vector[i];
+    }
+    for (size_t i = 0; i < t2_vec_size; i++) {
+      input[2 * t1_vec_size + i] = key2_vector[i];
+    }
+    
+    // Create output vector [key2_0,...,key2_n2, v_out_0,...,v_out_n2]
+    std::vector<wire_t> output(2 * t2_vec_size);
+    for (size_t i = 0; i < t2_vec_size; i++) {
+      output[i] = output_key2[i];
+      output[t2_vec_size + i] = output_v[i];
+    }
+    
+    gates_.push_back(std::make_shared<SIMDOGate>(GateType::kGroupwisePropagate, 0, input, output, permutation));
+    num_wires += 2 * t2_vec_size;
+    
+    return {output_key2, output_v};
   }
 
   // Add a compaction gate that takes t (tags) and multiple payload vectors
@@ -628,6 +600,19 @@ class Circuit {
           break;
         }
 
+        case GateType::kGroupwisePropagate: {
+          const auto* g = static_cast<SIMDOGate*>(gate.get());
+          size_t gate_depth = 0;
+          for (size_t i = 0; i < g->in.size(); i++) {
+            gate_depth = std::max({gate_level[g->in[i]], gate_depth});
+          }
+          for (int i = 0; i < g->outs.size(); i++) {
+            gate_level[g->outs[i]] = gate_depth + 1;
+          }
+          depth = std::max(depth, gate_level[gate->outs[0]]);
+          break;
+        }
+
         default:
           break;
       }
@@ -638,7 +623,7 @@ class Circuit {
     std::vector<std::vector<gate_ptr_t>> gates_by_level(depth + 1);
     for (const auto& gate : gates_) {
       res.count[gate->type]++;
-      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kGroupwiseIndex) {
+      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kGroupwiseIndex || gate->type == GateType::kGroupwisePropagate) {
         gates_by_level[gate_level[gate->outs[0]]].push_back(gate);
       } else {
         gates_by_level[gate_level[gate->out]].push_back(gate);

@@ -88,6 +88,10 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
       os << "Group-wise Index";
       break;
 
+    case kGroupwisePropagate:
+      os << "Group-wise Propagate";
+      break;
+
     default:
       os << "Invalid";
       break;

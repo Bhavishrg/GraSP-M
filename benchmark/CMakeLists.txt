@@ -14,6 +14,7 @@ add_benchmark(shuffle)
 add_benchmark(mult)
 add_benchmark(compaction)
 add_benchmark(groupindex)
+add_benchmark(grouppropagate)
 add_benchmark(reconstruction)
 
 add_custom_target(benchmarks)

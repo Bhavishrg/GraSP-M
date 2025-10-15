@@ -1318,6 +1318,721 @@ namespace graphdb
         
     }
 
+    void OnlineEvaluator::groupwisePropagateEvaluate(const common::utils::SIMDOGate &gp_gate) {
+        if (id_ == 0) { return; }
+        
+        auto *pre_gp = static_cast<PreprocGroupwisePropagateGate<Ring> *>(preproc_.gates[gp_gate.out].get());
+        
+        // Input format: [key1_0,...,key1_n1, v1_0,...,v1_n1, key2_0,...,key2_n2]
+        // Output format: [key2_0,...,key2_n2, v_out_0,...,v_out_n2]
+        
+        // Determine sizes from preprocessing or gate metadata
+        size_t t1_vec_size = pre_gp->t1_shuffle_a.size();
+        size_t t2_vec_size = pre_gp->t2_shuffle_a.size();
+        
+        // Extract input vectors
+        std::vector<Ring> key1_shares(t1_vec_size);
+        std::vector<Ring> v1_shares(t1_vec_size);
+        std::vector<Ring> key2_shares(t2_vec_size);
+        
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            key1_shares[i] = wires_[gp_gate.in[i]];
+            v1_shares[i] = wires_[gp_gate.in[t1_vec_size + i]];
+        }
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            key2_shares[i] = wires_[gp_gate.in[2 * t1_vec_size + i]];
+        }
+        
+        // Step 1 & 2: Compact T1 and T2 in parallel
+        
+        // Step 1a & 2a: Compute prefix sums c0 and c1 locally on key1 and key2 shares
+        std::vector<Ring> c1_t1_shares(t1_vec_size);
+        std::vector<Ring> c0_t1_shares(t1_vec_size);
+        std::vector<Ring> c1_t2_shares(t2_vec_size);
+        std::vector<Ring> c0_t2_shares(t2_vec_size);
+        
+        // T1 prefix sums
+        c1_t1_shares[0] = key1_shares[0];
+        if (id_ == 1) {
+            c0_t1_shares[0] = Ring(1) - key1_shares[0];
+        } else {
+            c0_t1_shares[0] = Ring(0) - key1_shares[0];
+        }
+        
+        for (size_t j = 1; j < t1_vec_size; ++j) {
+            c1_t1_shares[j] = c1_t1_shares[j - 1] + key1_shares[j];
+            c0_t1_shares[j] = c0_t1_shares[j - 1] + (id_ == 1 ? Ring(1) : Ring(0)) - key1_shares[j];
+        }
+        
+        // T2 prefix sums
+        c1_t2_shares[0] = key2_shares[0];
+        if (id_ == 1) {
+            c0_t2_shares[0] = Ring(1) - key2_shares[0];
+        } else {
+            c0_t2_shares[0] = Ring(0) - key2_shares[0];
+        }
+        
+        for (size_t j = 1; j < t2_vec_size; ++j) {
+            c1_t2_shares[j] = c1_t2_shares[j - 1] + key2_shares[j];
+            c0_t2_shares[j] = c0_t2_shares[j - 1] + (id_ == 1 ? Ring(1) : Ring(0)) - key2_shares[j];
+        }
+        
+        // Step 1b & 2b: Compute label shares for T1 and T2
+        // label[j] = (c0[j] + c1[N-1] - c1[j])(1 - t[j]) + c1[j] - 1
+        std::vector<Ring> label_t1_shares(t1_vec_size);
+        std::vector<Ring> label_t2_shares(t2_vec_size);
+        Ring c1_t1_last = c1_t1_shares[t1_vec_size - 1];
+        Ring c1_t2_last = c1_t2_shares[t2_vec_size - 1];
+        
+        // Prepare masked values for reconstruction using Beaver triples
+        int pKing = 1;
+        std::vector<Ring> u_t1_shares(t1_vec_size);  // diff_term - a
+        std::vector<Ring> v_t1_shares(t1_vec_size);  // (1-t) - b
+        std::vector<Ring> u_t2_shares(t2_vec_size);
+        std::vector<Ring> v_t2_shares(t2_vec_size);
+        
+        for (size_t j = 0; j < t1_vec_size; ++j) {
+            Ring diff_term = c0_t1_shares[j] + c1_t1_last - c1_t1_shares[j];
+            Ring one_minus_t;
+            if (id_ == 1) {
+                one_minus_t = Ring(1) - key1_shares[j];
+            } else {
+                one_minus_t = Ring(0) - key1_shares[j];
+            }
+            
+            u_t1_shares[j] = diff_term - pre_gp->t1_mult_triple_a[j].valueAt();
+            v_t1_shares[j] = one_minus_t - pre_gp->t1_mult_triple_b[j].valueAt();
+        }
+        
+        for (size_t j = 0; j < t2_vec_size; ++j) {
+            Ring diff_term = c0_t2_shares[j] + c1_t2_last - c1_t2_shares[j];
+            Ring one_minus_t;
+            if (id_ == 1) {
+                one_minus_t = Ring(1) - key2_shares[j];
+            } else {
+                one_minus_t = Ring(0) - key2_shares[j];
+            }
+            
+            u_t2_shares[j] = diff_term - pre_gp->t2_mult_triple_a[j].valueAt();
+            v_t2_shares[j] = one_minus_t - pre_gp->t2_mult_triple_b[j].valueAt();
+        }
+        
+        // Step 1c & 2c: Reconstruct u and v for T1 and T2 together
+        std::vector<Ring> u_t1_reconstructed(t1_vec_size, 0);
+        std::vector<Ring> v_t1_reconstructed(t1_vec_size, 0);
+        std::vector<Ring> u_t2_reconstructed(t2_vec_size, 0);
+        std::vector<Ring> v_t2_reconstructed(t2_vec_size, 0);
+        
+        std::vector<Ring> shares_to_send(2 * t1_vec_size + 2 * t2_vec_size);
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            shares_to_send[2*i] = u_t1_shares[i];
+            shares_to_send[2*i + 1] = v_t1_shares[i];
+        }
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            shares_to_send[2 * t1_vec_size + 2*i] = u_t2_shares[i];
+            shares_to_send[2 * t1_vec_size + 2*i + 1] = v_t2_shares[i];
+        }
+
+        // King-based reconstruction
+        if (id_ != pKing) {
+            network_->send(pKing, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
+            network_->flush(pKing);
+            
+            std::vector<Ring> reconstructed(2 * t1_vec_size + 2 * t2_vec_size);
+            network_->recv(pKing, reconstructed.data(), reconstructed.size() * sizeof(Ring));
+            usleep(latency_);
+            
+            for (size_t i = 0; i < t1_vec_size; ++i) {
+                u_t1_reconstructed[i] = reconstructed[2*i];
+                v_t1_reconstructed[i] = reconstructed[2*i + 1];
+            }
+            for (size_t i = 0; i < t2_vec_size; ++i) {
+                u_t2_reconstructed[i] = reconstructed[2 * t1_vec_size + 2*i];
+                v_t2_reconstructed[i] = reconstructed[2 * t1_vec_size + 2*i + 1];
+            }
+        } else {
+            // King party: collect, reconstruct, broadcast
+            std::vector<std::vector<Ring>> share_recv(nP_);
+            share_recv[pKing - 1] = shares_to_send;
+            
+            usleep(latency_);
+            
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != pKing) {
+                    share_recv[pid - 1].resize(2 * t1_vec_size + 2 * t2_vec_size);
+                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
+                }
+            }
+            
+            for (int pid = 0; pid < nP_; ++pid) {
+                for (size_t i = 0; i < t1_vec_size; ++i) {
+                    u_t1_reconstructed[i] += share_recv[pid][2*i];
+                    v_t1_reconstructed[i] += share_recv[pid][2*i + 1];
+                }
+                for (size_t i = 0; i < t2_vec_size; ++i) {
+                    u_t2_reconstructed[i] += share_recv[pid][2 * t1_vec_size + 2*i];
+                    v_t2_reconstructed[i] += share_recv[pid][2 * t1_vec_size + 2*i + 1];
+                }
+            }
+            
+            std::vector<Ring> reconstructed(2 * t1_vec_size + 2 * t2_vec_size);
+            for (size_t i = 0; i < t1_vec_size; ++i) {
+                reconstructed[2*i] = u_t1_reconstructed[i];
+                reconstructed[2*i + 1] = v_t1_reconstructed[i];
+            }
+            for (size_t i = 0; i < t2_vec_size; ++i) {
+                reconstructed[2 * t1_vec_size + 2*i] = u_t2_reconstructed[i];
+                reconstructed[2 * t1_vec_size + 2*i + 1] = v_t2_reconstructed[i];
+            }
+            
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != pKing) {
+                    network_->send(pid, reconstructed.data(), reconstructed.size() * sizeof(Ring));
+                    network_->flush(pid);
+                }
+            }
+        }
+        
+        // Step 1d & 2d: Compute label shares for T1 and T2
+        for (size_t j = 0; j < t1_vec_size; ++j) {
+            Ring u = u_t1_reconstructed[j];
+            Ring v = v_t1_reconstructed[j];
+            Ring a = pre_gp->t1_mult_triple_a[j].valueAt();
+            Ring b = pre_gp->t1_mult_triple_b[j].valueAt();
+            Ring c = pre_gp->t1_mult_triple_c[j].valueAt();
+            
+            if (id_ == 1) {
+                label_t1_shares[j] = u * v + u * b + v * a + c + c1_t1_shares[j] - Ring(1);
+            } else {
+                label_t1_shares[j] = u * b + v * a + c + c1_t1_shares[j];
+            }
+        }
+        
+        for (size_t j = 0; j < t2_vec_size; ++j) {
+            Ring u = u_t2_reconstructed[j];
+            Ring v = v_t2_reconstructed[j];
+            Ring a = pre_gp->t2_mult_triple_a[j].valueAt();
+            Ring b = pre_gp->t2_mult_triple_b[j].valueAt();
+            Ring c = pre_gp->t2_mult_triple_c[j].valueAt();
+            
+            if (id_ == 1) {
+                label_t2_shares[j] = u * v + u * b + v * a + c + c1_t2_shares[j] - Ring(1);
+            } else {
+                label_t2_shares[j] = u * b + v * a + c + c1_t2_shares[j];
+            }
+        }
+        
+        // Step 1e & 2e: Shuffle T1 (key1, v1, label_t1) and T2 (key2, label_t2) together
+        std::vector<Ring> key1_shuffled(t1_vec_size);
+        std::vector<Ring> v1_shuffled(t1_vec_size);
+        std::vector<Ring> label_t1_shuffled(t1_vec_size);
+        std::vector<Ring> key2_shuffled(t2_vec_size);
+        std::vector<Ring> label_t2_shuffled(t2_vec_size);
+        
+        // Compute z = input + a for each vector
+        std::vector<Ring> z_key1(t1_vec_size);
+        std::vector<Ring> z_v1(t1_vec_size);
+        std::vector<Ring> z_label_t1(t1_vec_size);
+        std::vector<Ring> z_key2(t2_vec_size);
+        std::vector<Ring> z_label_t2(t2_vec_size);
+        
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            z_key1[i] = key1_shares[i] + pre_gp->t1_shuffle_a[i].valueAt();
+            z_v1[i] = v1_shares[i] + pre_gp->t1_shuffle_a[i].valueAt();
+            z_label_t1[i] = label_t1_shares[i] + pre_gp->t1_shuffle_a[i].valueAt();
+        }
+        
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            z_key2[i] = key2_shares[i] + pre_gp->t2_shuffle_a[i].valueAt();
+            z_label_t2[i] = label_t2_shares[i] + pre_gp->t2_shuffle_a[i].valueAt();
+        }
+        
+        if (id_ == 1) {
+            // Party 1: Collect z from all parties, apply permutation, send to party 2
+            std::vector<std::vector<Ring>> z_key1_recv(nP_);
+            std::vector<std::vector<Ring>> z_v1_recv(nP_);
+            std::vector<std::vector<Ring>> z_label_t1_recv(nP_);
+            std::vector<std::vector<Ring>> z_key2_recv(nP_);
+            std::vector<std::vector<Ring>> z_label_t2_recv(nP_);
+            
+            z_key1_recv[0] = z_key1;
+            z_v1_recv[0] = z_v1;
+            z_label_t1_recv[0] = z_label_t1;
+            z_key2_recv[0] = z_key2;
+            z_label_t2_recv[0] = z_label_t2;
+            
+            #pragma omp parallel for
+            for (int pid = 2; pid <= nP_; ++pid) {
+                z_key1_recv[pid - 1].resize(t1_vec_size);
+                z_v1_recv[pid - 1].resize(t1_vec_size);
+                z_label_t1_recv[pid - 1].resize(t1_vec_size);
+                z_key2_recv[pid - 1].resize(t2_vec_size);
+                z_label_t2_recv[pid - 1].resize(t2_vec_size);
+                
+                network_->recv(pid, z_key1_recv[pid - 1].data(), t1_vec_size * sizeof(Ring));
+                network_->recv(pid, z_v1_recv[pid - 1].data(), t1_vec_size * sizeof(Ring));
+                network_->recv(pid, z_label_t1_recv[pid - 1].data(), t1_vec_size * sizeof(Ring));
+                network_->recv(pid, z_key2_recv[pid - 1].data(), t2_vec_size * sizeof(Ring));
+                network_->recv(pid, z_label_t2_recv[pid - 1].data(), t2_vec_size * sizeof(Ring));
+            }
+            usleep(latency_);
+            
+            // Sum all z values
+            std::vector<Ring> z_key1_sum(t1_vec_size, 0);
+            std::vector<Ring> z_v1_sum(t1_vec_size, 0);
+            std::vector<Ring> z_label_t1_sum(t1_vec_size, 0);
+            std::vector<Ring> z_key2_sum(t2_vec_size, 0);
+            std::vector<Ring> z_label_t2_sum(t2_vec_size, 0);
+            
+            for (int pid = 0; pid < nP_; ++pid) {
+                for (size_t i = 0; i < t1_vec_size; ++i) {
+                    z_key1_sum[i] += z_key1_recv[pid][i];
+                    z_v1_sum[i] += z_v1_recv[pid][i];
+                    z_label_t1_sum[i] += z_label_t1_recv[pid][i];
+                }
+                for (size_t i = 0; i < t2_vec_size; ++i) {
+                    z_key2_sum[i] += z_key2_recv[pid][i];
+                    z_label_t2_sum[i] += z_label_t2_recv[pid][i];
+                }
+            }
+            
+            // Apply permutation and add b
+            std::vector<Ring> z_key1_perm(t1_vec_size);
+            std::vector<Ring> z_v1_perm(t1_vec_size);
+            std::vector<Ring> z_label_t1_perm(t1_vec_size);
+            std::vector<Ring> z_key2_perm(t2_vec_size);
+            std::vector<Ring> z_label_t2_perm(t2_vec_size);
+            
+            for (size_t i = 0; i < t1_vec_size; ++i) {
+                int pi_i = pre_gp->t1_shuffle_pi[i];
+                z_key1_perm[i] = z_key1_sum[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt();
+                z_v1_perm[i] = z_v1_sum[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt();
+                z_label_t1_perm[i] = z_label_t1_sum[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt();
+                
+                key1_shuffled[i] = pre_gp->t1_shuffle_c[i].valueAt();
+                v1_shuffled[i] = pre_gp->t1_shuffle_c[i].valueAt();
+                label_t1_shuffled[i] = pre_gp->t1_shuffle_c[i].valueAt();
+            }
+            
+            for (size_t i = 0; i < t2_vec_size; ++i) {
+                int pi_i = pre_gp->t2_shuffle_pi[i];
+                z_key2_perm[i] = z_key2_sum[pi_i] + pre_gp->t2_shuffle_b[pi_i].valueAt();
+                z_label_t2_perm[i] = z_label_t2_sum[pi_i] + pre_gp->t2_shuffle_b[pi_i].valueAt();
+                
+                key2_shuffled[i] = pre_gp->t2_shuffle_c[i].valueAt();
+                label_t2_shuffled[i] = pre_gp->t2_shuffle_c[i].valueAt();
+            }
+            
+            // Send to party 2
+            network_->send(2, z_key1_perm.data(), t1_vec_size * sizeof(Ring));
+            network_->send(2, z_v1_perm.data(), t1_vec_size * sizeof(Ring));
+            network_->send(2, z_label_t1_perm.data(), t1_vec_size * sizeof(Ring));
+            network_->send(2, z_key2_perm.data(), t2_vec_size * sizeof(Ring));
+            network_->send(2, z_label_t2_perm.data(), t2_vec_size * sizeof(Ring));
+            
+        } else {
+            // Parties 2 to nP: Send z to party 1
+            network_->send(1, z_key1.data(), t1_vec_size * sizeof(Ring));
+            network_->send(1, z_v1.data(), t1_vec_size * sizeof(Ring));
+            network_->send(1, z_label_t1.data(), t1_vec_size * sizeof(Ring));
+            network_->send(1, z_key2.data(), t2_vec_size * sizeof(Ring));
+            network_->send(1, z_label_t2.data(), t2_vec_size * sizeof(Ring));
+            network_->flush(1);
+            
+            // Receive from previous party
+            std::vector<Ring> z_key1_recv(t1_vec_size);
+            std::vector<Ring> z_v1_recv(t1_vec_size);
+            std::vector<Ring> z_label_t1_recv(t1_vec_size);
+            std::vector<Ring> z_key2_recv(t2_vec_size);
+            std::vector<Ring> z_label_t2_recv(t2_vec_size);
+            
+            network_->recv(id_ - 1, z_key1_recv.data(), t1_vec_size * sizeof(Ring));
+            network_->recv(id_ - 1, z_v1_recv.data(), t1_vec_size * sizeof(Ring));
+            network_->recv(id_ - 1, z_label_t1_recv.data(), t1_vec_size * sizeof(Ring));
+            network_->recv(id_ - 1, z_key2_recv.data(), t2_vec_size * sizeof(Ring));
+            network_->recv(id_ - 1, z_label_t2_recv.data(), t2_vec_size * sizeof(Ring));
+            usleep(latency_);
+            
+            // Apply permutation and add b
+            std::vector<Ring> z_key1_send(t1_vec_size);
+            std::vector<Ring> z_v1_send(t1_vec_size);
+            std::vector<Ring> z_label_t1_send(t1_vec_size);
+            std::vector<Ring> z_key2_send(t2_vec_size);
+            std::vector<Ring> z_label_t2_send(t2_vec_size);
+            
+            for (size_t i = 0; i < t1_vec_size; ++i) {
+                int pi_i = pre_gp->t1_shuffle_pi[i];
+                
+                if (id_ != nP_) {
+                    z_key1_send[i] = z_key1_recv[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt();
+                    z_v1_send[i] = z_v1_recv[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt();
+                    z_label_t1_send[i] = z_label_t1_recv[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt();
+                    
+                    key1_shuffled[i] = pre_gp->t1_shuffle_c[i].valueAt();
+                    v1_shuffled[i] = pre_gp->t1_shuffle_c[i].valueAt();
+                    label_t1_shuffled[i] = pre_gp->t1_shuffle_c[i].valueAt();
+                } else {
+                    // Last party subtracts delta
+                    z_key1_send[i] = z_key1_recv[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt() - pre_gp->t1_shuffle_delta[i];
+                    z_v1_send[i] = z_v1_recv[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt() - pre_gp->t1_shuffle_delta[i];
+                    z_label_t1_send[i] = z_label_t1_recv[pi_i] + pre_gp->t1_shuffle_b[pi_i].valueAt() - pre_gp->t1_shuffle_delta[i];
+                    
+                    key1_shuffled[i] = z_key1_send[i] + pre_gp->t1_shuffle_c[i].valueAt();
+                    v1_shuffled[i] = z_v1_send[i] + pre_gp->t1_shuffle_c[i].valueAt();
+                    label_t1_shuffled[i] = z_label_t1_send[i] + pre_gp->t1_shuffle_c[i].valueAt();
+                }
+            }
+            
+            for (size_t i = 0; i < t2_vec_size; ++i) {
+                int pi_i = pre_gp->t2_shuffle_pi[i];
+                
+                if (id_ != nP_) {
+                    z_key2_send[i] = z_key2_recv[pi_i] + pre_gp->t2_shuffle_b[pi_i].valueAt();
+                    z_label_t2_send[i] = z_label_t2_recv[pi_i] + pre_gp->t2_shuffle_b[pi_i].valueAt();
+                    
+                    key2_shuffled[i] = pre_gp->t2_shuffle_c[i].valueAt();
+                    label_t2_shuffled[i] = pre_gp->t2_shuffle_c[i].valueAt();
+                } else {
+                    // Last party subtracts delta
+                    z_key2_send[i] = z_key2_recv[pi_i] + pre_gp->t2_shuffle_b[pi_i].valueAt() - pre_gp->t2_shuffle_delta[i];
+                    z_label_t2_send[i] = z_label_t2_recv[pi_i] + pre_gp->t2_shuffle_b[pi_i].valueAt() - pre_gp->t2_shuffle_delta[i];
+                    
+                    key2_shuffled[i] = z_key2_send[i] + pre_gp->t2_shuffle_c[i].valueAt();
+                    label_t2_shuffled[i] = z_label_t2_send[i] + pre_gp->t2_shuffle_c[i].valueAt();
+                }
+            }
+            
+            // Send to next party (if not last)
+            if (id_ != nP_) {
+                network_->send(id_ + 1, z_key1_send.data(), t1_vec_size * sizeof(Ring));
+                network_->send(id_ + 1, z_v1_send.data(), t1_vec_size * sizeof(Ring));
+                network_->send(id_ + 1, z_label_t1_send.data(), t1_vec_size * sizeof(Ring));
+                network_->send(id_ + 1, z_key2_send.data(), t2_vec_size * sizeof(Ring));
+                network_->send(id_ + 1, z_label_t2_send.data(), t2_vec_size * sizeof(Ring));
+            }
+        }
+        
+        
+        // Step 1f & 2f: Reconstruct label_t1_shuffled and label_t2_shuffled together
+        std::vector<Ring> label_t1_reconstructed(t1_vec_size, 0);
+        std::vector<Ring> label_t2_reconstructed(t2_vec_size, 0);
+        
+        std::vector<Ring> labels_to_send(t1_vec_size + t2_vec_size);
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            labels_to_send[i] = label_t1_shuffled[i];
+        }
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            labels_to_send[t1_vec_size + i] = label_t2_shuffled[i];
+        }
+        
+        if (id_ != pKing) {
+            network_->send(pKing, labels_to_send.data(), labels_to_send.size() * sizeof(Ring));
+            network_->flush(pKing);
+            
+            std::vector<Ring> labels_reconstructed(t1_vec_size + t2_vec_size);
+            network_->recv(pKing, labels_reconstructed.data(), labels_reconstructed.size() * sizeof(Ring));
+            usleep(latency_);
+            
+            for (size_t i = 0; i < t1_vec_size; ++i) {
+                label_t1_reconstructed[i] = labels_reconstructed[i];
+            }
+            for (size_t i = 0; i < t2_vec_size; ++i) {
+                label_t2_reconstructed[i] = labels_reconstructed[t1_vec_size + i];
+            }
+        } else {
+            // King party: collect, reconstruct, broadcast
+            std::vector<std::vector<Ring>> label_recv(nP_);
+            label_recv[pKing - 1] = labels_to_send;
+            
+            usleep(latency_);
+            
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != pKing) {
+                    label_recv[pid - 1].resize(t1_vec_size + t2_vec_size);
+                    network_->recv(pid, label_recv[pid - 1].data(), (t1_vec_size + t2_vec_size) * sizeof(Ring));
+                }
+            }
+            
+            for (int pid = 0; pid < nP_; ++pid) {
+                for (size_t i = 0; i < t1_vec_size; ++i) {
+                    label_t1_reconstructed[i] += label_recv[pid][i];
+                }
+                for (size_t i = 0; i < t2_vec_size; ++i) {
+                    label_t2_reconstructed[i] += label_recv[pid][t1_vec_size + i];
+                }
+            }
+            
+            std::vector<Ring> labels_reconstructed(t1_vec_size + t2_vec_size);
+            for (size_t i = 0; i < t1_vec_size; ++i) {
+                labels_reconstructed[i] = label_t1_reconstructed[i];
+            }
+            for (size_t i = 0; i < t2_vec_size; ++i) {
+                labels_reconstructed[t1_vec_size + i] = label_t2_reconstructed[i];
+            }
+            
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != pKing) {
+                    network_->send(pid, labels_reconstructed.data(), labels_reconstructed.size() * sizeof(Ring));
+                    network_->flush(pid);
+                }
+            }
+        }
+        
+        // Step 1g & 2g: Apply public permutation based on reconstructed labels
+        std::vector<Ring> key1_compacted(t1_vec_size);
+        std::vector<Ring> v1_compacted(t1_vec_size);
+        std::vector<Ring> key2_compacted(t2_vec_size);
+        
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            int label = static_cast<int>(label_t1_reconstructed[i]);
+            if (label >= 0 && label < static_cast<int>(t1_vec_size)) {
+                key1_compacted[label] = key1_shuffled[i];
+                v1_compacted[label] = v1_shuffled[i];
+            }
+        }
+        
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            int label = static_cast<int>(label_t2_reconstructed[i]);
+            if (label >= 0 && label < static_cast<int>(t2_vec_size)) {
+                key2_compacted[label] = key2_shuffled[i];
+            }
+        }
+
+        // Step 3: Compute differences and multiply by keys
+        // diff[i] = v1_compacted[i] - v1_compacted[i-1] for i > 0, diff[0] = v1_compacted[0]
+        // result[i] = diff[i] * key1_compacted[i]
+        
+        std::vector<Ring> diff_shares(t1_vec_size);
+        if (id_ == 1) {
+            diff_shares[0] = v1_compacted[0];
+        } else {
+            diff_shares[0] = v1_compacted[0];
+        }
+        
+        for (size_t i = 1; i < t1_vec_size; ++i) {
+            diff_shares[i] = v1_compacted[i] - v1_compacted[i - 1];
+        }
+        
+        // Step 3b: Multiply diff[i] * key1_compacted[i] using Beaver triples
+        // Prepare masked values for reconstruction
+        std::vector<Ring> u_diff_shares(t1_vec_size);  // diff - a
+        std::vector<Ring> v_key_shares(t1_vec_size);  // key - b
+        
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            u_diff_shares[i] = diff_shares[i] - pre_gp->diff_mult_triple_a[i].valueAt();
+            v_key_shares[i] = key1_compacted[i] - pre_gp->diff_mult_triple_b[i].valueAt();
+        }
+        
+        // Step 3c: Reconstruct u_diff and v_key
+        std::vector<Ring> u_diff_reconstructed(t1_vec_size, 0);
+        std::vector<Ring> v_key_reconstructed(t1_vec_size, 0);
+        
+        std::vector<Ring> shares_to_send_mult(2 * t1_vec_size);
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            shares_to_send_mult[2*i] = u_diff_shares[i];
+            shares_to_send_mult[2*i + 1] = v_key_shares[i];
+        }
+        
+        if (id_ != pKing) {
+            network_->send(pKing, shares_to_send_mult.data(), shares_to_send_mult.size() * sizeof(Ring));
+            network_->flush(pKing);
+            
+            std::vector<Ring> reconstructed_mult(2 * t1_vec_size);
+            network_->recv(pKing, reconstructed_mult.data(), reconstructed_mult.size() * sizeof(Ring));
+            usleep(latency_);
+            
+            for (size_t i = 0; i < t1_vec_size; ++i) {
+                u_diff_reconstructed[i] = reconstructed_mult[2*i];
+                v_key_reconstructed[i] = reconstructed_mult[2*i + 1];
+            }
+        } else {
+            // King party: collect, reconstruct, broadcast
+            std::vector<std::vector<Ring>> share_recv_mult(nP_);
+            share_recv_mult[pKing - 1] = shares_to_send_mult;
+            
+            usleep(latency_);
+            
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != pKing) {
+                    share_recv_mult[pid - 1].resize(2 * t1_vec_size);
+                    network_->recv(pid, share_recv_mult[pid - 1].data(), share_recv_mult[pid - 1].size() * sizeof(Ring));
+                }
+            }
+            
+            for (int pid = 0; pid < nP_; ++pid) {
+                for (size_t i = 0; i < t1_vec_size; ++i) {
+                    u_diff_reconstructed[i] += share_recv_mult[pid][2*i];
+                    v_key_reconstructed[i] += share_recv_mult[pid][2*i + 1];
+                }
+            }
+            
+            std::vector<Ring> reconstructed_mult(2 * t1_vec_size);
+            for (size_t i = 0; i < t1_vec_size; ++i) {
+                reconstructed_mult[2*i] = u_diff_reconstructed[i];
+                reconstructed_mult[2*i + 1] = v_key_reconstructed[i];
+            }
+            
+            #pragma omp parallel for
+            for (int pid = 1; pid <= nP_; ++pid) {
+                if (pid != pKing) {
+                    network_->send(pid, reconstructed_mult.data(), reconstructed_mult.size() * sizeof(Ring));
+                    network_->flush(pid);
+                }
+            }
+        }
+        
+        // Step 3d: Compute multiplication result shares
+        std::vector<Ring> key_times_diff_shares(t1_vec_size);
+        
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            Ring u = u_diff_reconstructed[i];
+            Ring v = v_key_reconstructed[i];
+            Ring a = pre_gp->diff_mult_triple_a[i].valueAt();
+            Ring b = pre_gp->diff_mult_triple_b[i].valueAt();
+            Ring c = pre_gp->diff_mult_triple_c[i].valueAt();
+            
+            if (id_ == 1) {
+                key_times_diff_shares[i] = u * v + u * b + v * a + c;
+            } else {
+                key_times_diff_shares[i] = u * b + v * a + c;
+            }
+        }
+        
+        
+        // Step 4a: Create extended vector matching T2 size
+        // Since T1 is compacted and has size t1_vec_size, but T2 has size t2_vec_size,
+        // we pad the key_times_diff to T2 size
+        std::vector<Ring> extended_diff_shares_(t2_vec_size);
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            if (i < t1_vec_size) {
+                extended_diff_shares_[i] = key_times_diff_shares[i];
+            } else {
+                extended_diff_shares_[i] = Ring(0);
+            }
+        }
+        
+        // Step 4b-pre: Reverse the public permutation applied in Step 2g
+
+        std::vector<Ring> key2_uncompacted(t2_vec_size);
+        
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            int label = static_cast<int>(label_t2_reconstructed[i]);
+            if (label >= 0 && label < static_cast<int>(t2_vec_size)) {
+                key2_uncompacted[i] = key2_compacted[label];
+            } else {
+                key2_uncompacted[i] = Ring(0);
+            }
+        }
+        
+        // Step 4b-pre: Reverse the public permutation applied in Step 2g
+        std::vector<Ring> extended_diff_shares(t2_vec_size);
+        
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            int label = static_cast<int>(label_t2_reconstructed[i]);
+            if (label >= 0 && label < static_cast<int>(t2_vec_size)) {
+                extended_diff_shares[i] = extended_diff_shares_[label];
+            } else {
+                extended_diff_shares[i] = Ring(0);
+            }
+        }
+        
+        // Step 4b: Shuffle extended_diff back using reverse compaction shuffle
+        std::vector<Ring> diff_reverse_shuffled(t2_vec_size);
+        
+        // Compute z = input + a for reverse compaction
+        std::vector<Ring> z_diff_rev(t2_vec_size);
+        
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            z_diff_rev[i] = extended_diff_shares[i] + pre_gp->revcompact_shuffle_a[i].valueAt();
+        }
+        
+        if (id_ == 1) {
+            // Party 1: Collect z from all parties, apply permutation, send to party 2
+            std::vector<std::vector<Ring>> z_diff_rev_recv(nP_);
+            z_diff_rev_recv[0] = z_diff_rev;
+            
+            #pragma omp parallel for
+            for (int pid = 2; pid <= nP_; ++pid) {
+                z_diff_rev_recv[pid - 1].resize(t2_vec_size);
+                network_->recv(pid, z_diff_rev_recv[pid - 1].data(), t2_vec_size * sizeof(Ring));
+            }
+            usleep(latency_);
+            
+            // Sum all z values
+            std::vector<Ring> z_diff_rev_sum(t2_vec_size, 0);
+            for (int pid = 0; pid < nP_; ++pid) {
+                for (size_t i = 0; i < t2_vec_size; ++i) {
+                    z_diff_rev_sum[i] += z_diff_rev_recv[pid][i];
+                }
+            }
+            
+            // Apply permutation and add b
+            std::vector<Ring> z_diff_rev_perm(t2_vec_size);
+            for (size_t i = 0; i < t2_vec_size; ++i) {
+                int pi_i = pre_gp->revcompact_shuffle_pi[i];
+                z_diff_rev_perm[i] = z_diff_rev_sum[pi_i] + pre_gp->revcompact_shuffle_b[pi_i].valueAt();
+                diff_reverse_shuffled[i] = pre_gp->revcompact_shuffle_c[i].valueAt();
+            }
+            
+            // Send to party 2
+            network_->send(2, z_diff_rev_perm.data(), t2_vec_size * sizeof(Ring));
+            
+        } else {
+            // Parties 2 to nP: Send z to party 1
+            network_->send(1, z_diff_rev.data(), t2_vec_size * sizeof(Ring));
+            network_->flush(1);
+            
+            // Receive from previous party
+            std::vector<Ring> z_diff_rev_recv(t2_vec_size);
+            network_->recv(id_ - 1, z_diff_rev_recv.data(), t2_vec_size * sizeof(Ring));
+            usleep(latency_);
+            
+            // Apply permutation and add b
+            std::vector<Ring> z_diff_rev_send(t2_vec_size);
+            for (size_t i = 0; i < t2_vec_size; ++i) {
+                int pi_i = pre_gp->revcompact_shuffle_pi[i];
+                
+                if (id_ != nP_) {
+                    z_diff_rev_send[i] = z_diff_rev_recv[pi_i] + pre_gp->revcompact_shuffle_b[pi_i].valueAt();
+                    diff_reverse_shuffled[i] = pre_gp->revcompact_shuffle_c[i].valueAt();
+                } else {
+                    // Last party subtracts delta
+                    z_diff_rev_send[i] = z_diff_rev_recv[pi_i] + pre_gp->revcompact_shuffle_b[pi_i].valueAt() - pre_gp->revcompact_shuffle_delta[i];
+                    diff_reverse_shuffled[i] = z_diff_rev_send[i] + pre_gp->revcompact_shuffle_c[i].valueAt();
+                }
+            }
+            
+            // Send to next party (if not last)
+            if (id_ != nP_) {
+                network_->send(id_ + 1, z_diff_rev_send.data(), t2_vec_size * sizeof(Ring));
+            }
+        }
+
+        // Step 5: Prefix sum to propagate values within groups
+        // This computes cumulative sums from left to right
+        // result[i] = diff_reverse_shuffled[0] + diff_reverse_shuffled[1] + ... + diff_reverse_shuffled[i]
+        
+        std::vector<Ring> propagated_values(t2_vec_size);
+        
+        // Start from the first element and work forward
+        propagated_values[0] = diff_reverse_shuffled[0];
+        
+        for (size_t i = 1; i < t2_vec_size; ++i) {
+            propagated_values[i] = propagated_values[i - 1] + diff_reverse_shuffled[i];
+        }
+
+        // Final output: key2_uncompacted (restored key2) and propagated_values
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            wires_[gp_gate.outs[i]] = key2_uncompacted[i];
+            wires_[gp_gate.outs[t2_vec_size + i]] = propagated_values[i];
+        }
+    }
+
     void OnlineEvaluator::multEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates) {
         if (id_ == 0) { return; }
         
@@ -1519,6 +2234,12 @@ namespace graphdb
                     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
                     // Group-wise Index gates are processed immediately
                     groupwiseIndexEvaluate(*g);
+                    break;
+                }
+                case common::utils::GateType::kGroupwisePropagate: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    // Group-wise Propagate gates are processed immediately
+                    groupwisePropagateEvaluate(*g);
                     break;
                 }
                 default:

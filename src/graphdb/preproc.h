@@ -200,6 +200,68 @@ struct PreprocGroupwiseIndexGate : public PreprocGate<R> {
   PreprocGroupwiseIndexGate() = default;
 };
 
+// Preprocessing for Group-wise Propagate gate
+// Similar structure to GroupwiseIndex but with different multiplication semantics
+template <class R>
+struct PreprocGroupwisePropagateGate : public PreprocGate<R> {
+  // First compaction preprocessing (for T1 based on key)
+  std::vector<AddShare<R>> t1_shuffle_a;
+  std::vector<TPShare<R>> t1_shuffle_tp_a;
+  std::vector<AddShare<R>> t1_shuffle_b;
+  std::vector<TPShare<R>> t1_shuffle_tp_b;
+  std::vector<AddShare<R>> t1_shuffle_c;
+  std::vector<TPShare<R>> t1_shuffle_tp_c;
+  std::vector<Ring> t1_shuffle_delta;
+  std::vector<int> t1_shuffle_pi;
+  std::vector<std::vector<int>> t1_shuffle_tp_pi_all;
+  std::vector<AddShare<R>> t1_mult_triple_a;
+  std::vector<TPShare<R>> t1_mult_tp_triple_a;
+  std::vector<AddShare<R>> t1_mult_triple_b;
+  std::vector<TPShare<R>> t1_mult_tp_triple_b;
+  std::vector<AddShare<R>> t1_mult_triple_c;
+  std::vector<TPShare<R>> t1_mult_tp_triple_c;
+  
+  // Second compaction preprocessing (for T2 based on key)
+  std::vector<AddShare<R>> t2_shuffle_a;
+  std::vector<TPShare<R>> t2_shuffle_tp_a;
+  std::vector<AddShare<R>> t2_shuffle_b;
+  std::vector<TPShare<R>> t2_shuffle_tp_b;
+  std::vector<AddShare<R>> t2_shuffle_c;
+  std::vector<TPShare<R>> t2_shuffle_tp_c;
+  std::vector<Ring> t2_shuffle_delta;
+  std::vector<int> t2_shuffle_pi;
+  std::vector<std::vector<int>> t2_shuffle_tp_pi_all;
+  std::vector<AddShare<R>> t2_mult_triple_a;
+  std::vector<TPShare<R>> t2_mult_tp_triple_a;
+  std::vector<AddShare<R>> t2_mult_triple_b;
+  std::vector<TPShare<R>> t2_mult_tp_triple_b;
+  std::vector<AddShare<R>> t2_mult_triple_c;
+  std::vector<TPShare<R>> t2_mult_tp_triple_c;
+  
+  // Multiplication triples for difference * key computation in Step 3
+  std::vector<AddShare<R>> diff_mult_triple_a;
+  std::vector<TPShare<R>> diff_mult_tp_triple_a;
+  std::vector<AddShare<R>> diff_mult_triple_b;
+  std::vector<TPShare<R>> diff_mult_tp_triple_b;
+  std::vector<AddShare<R>> diff_mult_triple_c;
+  std::vector<TPShare<R>> diff_mult_tp_triple_c;
+  
+  // Reverse compaction preprocessing (for Step 4)
+  std::vector<AddShare<R>> revcompact_shuffle_a;
+  std::vector<TPShare<R>> revcompact_shuffle_tp_a;
+  std::vector<AddShare<R>> revcompact_shuffle_b;
+  std::vector<TPShare<R>> revcompact_shuffle_tp_b;
+  std::vector<AddShare<R>> revcompact_shuffle_c;
+  std::vector<TPShare<R>> revcompact_shuffle_tp_c;
+  std::vector<Ring> revcompact_shuffle_delta;
+  std::vector<int> revcompact_shuffle_pi;
+  std::vector<std::vector<int>> revcompact_shuffle_tp_pi_all;
+  
+  bool viaPking = true;
+  
+  PreprocGroupwisePropagateGate() = default;
+};
+
 // Preprocessed data for the circuit.
 template <class R>
 struct PreprocCircuit {
