@@ -61,6 +61,8 @@ namespace graphdb {
 
     void compactEvaluate(const common::utils::SIMDOGate &compact_gate);
 
+    void groupwiseIndexEvaluate(const common::utils::SIMDOGate &gi_gate);
+
     std::vector<Ring> getOutputs();
 
     Ring reconstruct(AddShare<Ring> &shares);

@@ -32,6 +32,7 @@ enum GateType {
   kPermAndSh,
   kPublicPerm,
   kCompact,
+  kGroupwiseIndex,
   kInvalid,
   NumGates
 };
@@ -387,6 +388,62 @@ class Circuit {
   //   return output;
   // }
 
+  // Add a Group-wise Index gate
+  // Takes key vector (binary) and value vector, returns (ind, key, v)
+  // where ind[i] = number of elements in the group before position i
+  std::tuple<std::vector<wire_t>, std::vector<wire_t>, std::vector<wire_t>> addGroupwiseIndexGate(
+      const std::vector<wire_t>& key_vector,
+      const std::vector<wire_t>& v_vector,
+      const std::vector<std::vector<int>>& permutation) {
+    
+    size_t vec_size = key_vector.size();
+    
+    if (v_vector.size() != vec_size) {
+      throw std::invalid_argument("Value vector must have the same size as key vector.");
+    }
+    
+    // Validate input wires
+    for (size_t i = 0; i < vec_size; i++) {
+      if (!isWireValid(key_vector[i])) {
+        throw std::invalid_argument("Invalid wire ID in key_vector.");
+      }
+      if (!isWireValid(v_vector[i])) {
+        throw std::invalid_argument("Invalid wire ID in v_vector.");
+      }
+    }
+    
+    // Create output wires: vec_size for ind, vec_size for key, vec_size for v
+    std::vector<wire_t> output_ind(vec_size);
+    std::vector<wire_t> output_key(vec_size);
+    std::vector<wire_t> output_v(vec_size);
+    
+    for (size_t i = 0; i < vec_size; i++) {
+      output_ind[i] = num_wires + i;
+      output_key[i] = num_wires + vec_size + i;
+      output_v[i] = num_wires + 2 * vec_size + i;
+    }
+    
+    // Create input vector [key0, key1, ..., keyn, v0, v1, ..., vn]
+    std::vector<wire_t> input(2 * vec_size);
+    for (size_t i = 0; i < vec_size; i++) {
+      input[i] = key_vector[i];
+      input[vec_size + i] = v_vector[i];
+    }
+    
+    // Create output vector for the gate
+    std::vector<wire_t> output(3 * vec_size);
+    for (size_t i = 0; i < vec_size; i++) {
+      output[i] = output_ind[i];
+      output[vec_size + i] = output_key[i];
+      output[2 * vec_size + i] = output_v[i];
+    }
+    
+    gates_.push_back(std::make_shared<SIMDOGate>(GateType::kGroupwiseIndex, 0, input, output, permutation));
+    num_wires += 3 * vec_size;
+    
+    return {output_ind, output_key, output_v};
+  }
+
   // Add a compaction gate that takes t (tags) and multiple payload vectors
   // Returns compacted versions of t and all payload vectors
   std::pair<std::vector<wire_t>, std::vector<std::vector<wire_t>>> addCompactGate(
@@ -558,6 +615,19 @@ class Circuit {
           break;
         }
 
+        case GateType::kGroupwiseIndex: {
+          const auto* g = static_cast<SIMDOGate*>(gate.get());
+          size_t gate_depth = 0;
+          for (size_t i = 0; i < g->in.size(); i++) {
+            gate_depth = std::max({gate_level[g->in[i]], gate_depth});
+          }
+          for (int i = 0; i < g->outs.size(); i++) {
+            gate_level[g->outs[i]] = gate_depth + 1;
+          }
+          depth = std::max(depth, gate_level[gate->outs[0]]);
+          break;
+        }
+
         default:
           break;
       }
@@ -568,7 +638,7 @@ class Circuit {
     std::vector<std::vector<gate_ptr_t>> gates_by_level(depth + 1);
     for (const auto& gate : gates_) {
       res.count[gate->type]++;
-      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact) {
+      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kGroupwiseIndex) {
         gates_by_level[gate_level[gate->outs[0]]].push_back(gate);
       } else {
         gates_by_level[gate_level[gate->out]].push_back(gate);

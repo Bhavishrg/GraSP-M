@@ -155,6 +155,51 @@ struct PreprocCompactGate : public PreprocGate<R> {
         mult_tp_triple_c(mult_tp_triple_c), viaPking(viaPking) {}
 };
 
+// Preprocessing for Group-wise Index gate
+// Uses two compact operations and multiplication triples for secure multiplications
+template <class R>
+struct PreprocGroupwiseIndexGate : public PreprocGate<R> {
+  // First compaction preprocessing (for key vector)
+  std::vector<AddShare<R>> shuffle_a;
+  std::vector<TPShare<R>> shuffle_tp_a;
+  std::vector<AddShare<R>> shuffle_b;
+  std::vector<TPShare<R>> shuffle_tp_b;
+  std::vector<AddShare<R>> shuffle_c;
+  std::vector<TPShare<R>> shuffle_tp_c;
+  std::vector<Ring> shuffle_delta;
+  std::vector<int> shuffle_pi;
+  std::vector<std::vector<int>> shuffle_tp_pi_all;
+  std::vector<AddShare<R>> mult_triple_a;
+  std::vector<TPShare<R>> mult_tp_triple_a;
+  std::vector<AddShare<R>> mult_triple_b;
+  std::vector<TPShare<R>> mult_tp_triple_b;
+  std::vector<AddShare<R>> mult_triple_c;
+  std::vector<TPShare<R>> mult_tp_triple_c;
+  
+  // Reverse compaction preprocessing (shuffle only, no multiplication needed)
+  std::vector<AddShare<R>> revcompact_shuffle_a;
+  std::vector<TPShare<R>> revcompact_shuffle_tp_a;
+  std::vector<AddShare<R>> revcompact_shuffle_b;
+  std::vector<TPShare<R>> revcompact_shuffle_tp_b;
+  std::vector<AddShare<R>> revcompact_shuffle_c;
+  std::vector<TPShare<R>> revcompact_shuffle_tp_c;
+  std::vector<Ring> revcompact_shuffle_delta;
+  std::vector<int> revcompact_shuffle_pi;
+  std::vector<std::vector<int>> revcompact_shuffle_tp_pi_all;
+  
+  // Multiplication triples for key_c * key_compacted
+  std::vector<AddShare<R>> keymult_triple_a;
+  std::vector<TPShare<R>> keymult_tp_triple_a;
+  std::vector<AddShare<R>> keymult_triple_b;
+  std::vector<TPShare<R>> keymult_tp_triple_b;
+  std::vector<AddShare<R>> keymult_triple_c;
+  std::vector<TPShare<R>> keymult_tp_triple_c;
+  
+  bool viaPking = true;
+  
+  PreprocGroupwiseIndexGate() = default;
+};
+
 // Preprocessed data for the circuit.
 template <class R>
 struct PreprocCircuit {

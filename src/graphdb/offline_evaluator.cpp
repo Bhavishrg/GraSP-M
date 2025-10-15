@@ -416,6 +416,140 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+        case common::utils::GateType::kGroupwiseIndex: {
+          // Group-wise Index gate preprocessing
+          auto *gi_g = static_cast<common::utils::SIMDOGate *>(gate.get());
+          // Input is [key0,...,keyn, v0,...,vn]
+          // Output is [ind0,...,indn, key0,...,keyn, v0,...,vn]
+          auto vec_size = gi_g->in.size() / 2;
+          
+          // We need preprocessing for:
+          // 1. First compaction shuffle (delta and permutation only)
+          // 2. Multiplications for label computation in first compaction
+          // 3. Multiplications (key_c * key_compacted)
+          // 4. Reverse compaction shuffle (delta and permutation only)
+          
+          // First compaction shuffle preprocessing
+          std::vector<AddShare<Ring>> shuffle_a(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_a(vec_size);
+          std::vector<AddShare<Ring>> shuffle_b(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_b(vec_size);
+          std::vector<AddShare<Ring>> shuffle_c(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_c(vec_size);
+          
+          for (int i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, shuffle_a[i], shuffle_tp_a[i]);
+            randomShare(nP_, id_, rgen_, shuffle_b[i], shuffle_tp_b[i]);
+            randomShare(nP_, id_, rgen_, shuffle_c[i], shuffle_tp_c[i]);
+          }
+          
+          std::vector<int> shuffle_pi;
+          std::vector<std::vector<int>> shuffle_tp_pi_all;
+          if (id_ != 0) {
+            shuffle_pi = std::move(gi_g->permutation[0]);
+          } else {
+            shuffle_tp_pi_all = std::move(gi_g->permutation);
+          }
+          
+          std::vector<Ring> shuffle_delta(vec_size);
+          generateShuffleDeltaVector(nP_, id_, rgen_, shuffle_delta, shuffle_tp_a, 
+                                    shuffle_tp_b, shuffle_tp_c,
+                                    shuffle_tp_pi_all, vec_size, rand_sh_sec, idx_rand_sh_sec);
+          
+          // Multiplication triples for label computation in first compaction
+          std::vector<AddShare<Ring>> mult_triple_a(vec_size);
+          std::vector<TPShare<Ring>> mult_tp_triple_a(vec_size);
+          std::vector<AddShare<Ring>> mult_triple_b(vec_size);
+          std::vector<TPShare<Ring>> mult_tp_triple_b(vec_size);
+          std::vector<AddShare<Ring>> mult_triple_c(vec_size);
+          std::vector<TPShare<Ring>> mult_tp_triple_c(vec_size);
+          
+          for (int i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, mult_triple_a[i], mult_tp_triple_a[i]);
+            randomShare(nP_, id_, rgen_, mult_triple_b[i], mult_tp_triple_b[i]);
+            Ring tp_prod;
+            if (id_ == 0) { tp_prod = mult_tp_triple_a[i].secret() * mult_tp_triple_b[i].secret(); }
+            randomShareSecret(nP_, id_, rgen_, mult_triple_c[i], mult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
+          }
+          
+          // Multiplication triples for key_c * key_compacted
+          std::vector<AddShare<Ring>> keymult_triple_a(vec_size);
+          std::vector<TPShare<Ring>> keymult_tp_triple_a(vec_size);
+          std::vector<AddShare<Ring>> keymult_triple_b(vec_size);
+          std::vector<TPShare<Ring>> keymult_tp_triple_b(vec_size);
+          std::vector<AddShare<Ring>> keymult_triple_c(vec_size);
+          std::vector<TPShare<Ring>> keymult_tp_triple_c(vec_size);
+          
+          for (int i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, keymult_triple_a[i], keymult_tp_triple_a[i]);
+            randomShare(nP_, id_, rgen_, keymult_triple_b[i], keymult_tp_triple_b[i]);
+            Ring tp_prod;
+            if (id_ == 0) { tp_prod = keymult_tp_triple_a[i].secret() * keymult_tp_triple_b[i].secret(); }
+            randomShareSecret(nP_, id_, rgen_, keymult_triple_c[i], keymult_tp_triple_c[i], tp_prod, rand_sh_sec, idx_rand_sh_sec);
+          }
+          
+          // Reverse compaction shuffle preprocessing
+          std::vector<AddShare<Ring>> revcompact_shuffle_a(vec_size);
+          std::vector<TPShare<Ring>> revcompact_shuffle_tp_a(vec_size);
+          std::vector<AddShare<Ring>> revcompact_shuffle_b(vec_size);
+          std::vector<TPShare<Ring>> revcompact_shuffle_tp_b(vec_size);
+          std::vector<AddShare<Ring>> revcompact_shuffle_c(vec_size);
+          std::vector<TPShare<Ring>> revcompact_shuffle_tp_c(vec_size);
+          
+          for (int i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, revcompact_shuffle_a[i], revcompact_shuffle_tp_a[i]);
+            randomShare(nP_, id_, rgen_, revcompact_shuffle_b[i], revcompact_shuffle_tp_b[i]);
+            randomShare(nP_, id_, rgen_, revcompact_shuffle_c[i], revcompact_shuffle_tp_c[i]);
+          }
+          
+          std::vector<int> revcompact_shuffle_pi = shuffle_pi;  // Reuse same permutation
+          std::vector<std::vector<int>> revcompact_shuffle_tp_pi_all = shuffle_tp_pi_all;
+          
+          std::vector<Ring> revcompact_shuffle_delta(vec_size);
+          generateShuffleDeltaVector(nP_, id_, rgen_, revcompact_shuffle_delta, revcompact_shuffle_tp_a, 
+                                    revcompact_shuffle_tp_b, revcompact_shuffle_tp_c,
+                                    revcompact_shuffle_tp_pi_all, vec_size, rand_sh_sec, idx_rand_sh_sec);
+          
+          auto preproc_gi = std::make_unique<PreprocGroupwiseIndexGate<Ring>>();
+          preproc_gi->shuffle_a = std::move(shuffle_a);
+          preproc_gi->shuffle_tp_a = std::move(shuffle_tp_a);
+          preproc_gi->shuffle_b = std::move(shuffle_b);
+          preproc_gi->shuffle_tp_b = std::move(shuffle_tp_b);
+          preproc_gi->shuffle_c = std::move(shuffle_c);
+          preproc_gi->shuffle_tp_c = std::move(shuffle_tp_c);
+          preproc_gi->shuffle_delta = std::move(shuffle_delta);
+          preproc_gi->shuffle_pi = std::move(shuffle_pi);
+          preproc_gi->shuffle_tp_pi_all = std::move(shuffle_tp_pi_all);
+          preproc_gi->mult_triple_a = std::move(mult_triple_a);
+          preproc_gi->mult_tp_triple_a = std::move(mult_tp_triple_a);
+          preproc_gi->mult_triple_b = std::move(mult_triple_b);
+          preproc_gi->mult_tp_triple_b = std::move(mult_tp_triple_b);
+          preproc_gi->mult_triple_c = std::move(mult_triple_c);
+          preproc_gi->mult_tp_triple_c = std::move(mult_tp_triple_c);
+          
+          preproc_gi->keymult_triple_a = std::move(keymult_triple_a);
+          preproc_gi->keymult_tp_triple_a = std::move(keymult_tp_triple_a);
+          preproc_gi->keymult_triple_b = std::move(keymult_triple_b);
+          preproc_gi->keymult_tp_triple_b = std::move(keymult_tp_triple_b);
+          preproc_gi->keymult_triple_c = std::move(keymult_triple_c);
+          preproc_gi->keymult_tp_triple_c = std::move(keymult_tp_triple_c);
+          
+          preproc_gi->revcompact_shuffle_a = std::move(revcompact_shuffle_a);
+          preproc_gi->revcompact_shuffle_tp_a = std::move(revcompact_shuffle_tp_a);
+          preproc_gi->revcompact_shuffle_b = std::move(revcompact_shuffle_b);
+          preproc_gi->revcompact_shuffle_tp_b = std::move(revcompact_shuffle_tp_b);
+          preproc_gi->revcompact_shuffle_c = std::move(revcompact_shuffle_c);
+          preproc_gi->revcompact_shuffle_tp_c = std::move(revcompact_shuffle_tp_c);
+          preproc_gi->revcompact_shuffle_delta = std::move(revcompact_shuffle_delta);
+          preproc_gi->revcompact_shuffle_pi = std::move(revcompact_shuffle_pi);
+          preproc_gi->revcompact_shuffle_tp_pi_all = std::move(revcompact_shuffle_tp_pi_all);
+          
+          preproc_gi->viaPking = true;
+          
+          preproc_.gates[gate->out] = std::move(preproc_gi);
+          break;
+        }
+
         default: {
           break;
         }

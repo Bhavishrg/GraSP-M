@@ -84,6 +84,10 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
       os << "Compact";
       break;
 
+    case kGroupwiseIndex:
+      os << "Group-wise Index";
+      break;
+
     default:
       os << "Invalid";
       break;
