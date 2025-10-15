@@ -34,6 +34,12 @@ class OfflineEvaluator {
   // is then used to generate randomness for common coin output.
   //emp::block commonCoinKey();
 
+  // Helper function to reconstruct shares via king party or direct all-to-all
+  static void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
+                         const std::vector<Ring>& shares_list, 
+                         std::vector<Ring>& reconstructed_list,
+                         bool via_pking, int latency);
+
   public:
   OfflineEvaluator(int nP, int my_id, std::shared_ptr<io::NetIOMP> network,
                    common::utils::LevelOrderedCircuit circ, int threads, int seed = 200, int latency = 100, bool use_pking = true);

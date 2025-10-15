@@ -5,6 +5,80 @@
 
 namespace graphdb
 {
+    // Helper function to reconstruct shares via king party or direct all-to-all
+    void OnlineEvaluator::reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
+                                     const std::vector<Ring>& shares_list,
+                                     std::vector<Ring>& reconstructed_list,
+                                     bool via_pking, int latency) {
+        int pKing = 1;
+        size_t num_shares = shares_list.size();
+        reconstructed_list.resize(num_shares, 0);
+        
+        if (via_pking) {
+            // Reconstruction via king party
+            if (pid != pKing) {
+                network->send(pKing, shares_list.data(), shares_list.size() * sizeof(Ring));
+                usleep(latency);
+                network->recv(pKing, reconstructed_list.data(), reconstructed_list.size() * sizeof(Ring));
+            } else {
+                std::vector<std::vector<Ring>> share_recv(nP);
+                share_recv[pKing - 1] = shares_list;
+                usleep(latency);
+                
+                #pragma omp parallel for
+                for (int p = 1; p <= nP; ++p) {
+                    if (p != pKing) {
+                        share_recv[p - 1].resize(num_shares);
+                        network->recv(p, share_recv[p - 1].data(), share_recv[p - 1].size() * sizeof(Ring));
+                    }
+                }
+                
+                for (int p = 0; p < nP; ++p) {
+                    #pragma omp parallel for
+                    for (size_t i = 0; i < num_shares; ++i) {
+                        reconstructed_list[i] += share_recv[p][i];
+                    }
+                }
+                
+                #pragma omp parallel for
+                for (int p = 1; p <= nP; ++p) {
+                    if (p != pKing) {
+                        network->send(p, reconstructed_list.data(), reconstructed_list.size() * sizeof(Ring));
+                        network->flush(p);
+                    }
+                }
+            }
+        } else {
+            // Direct reconstruction (all parties exchange shares)
+            std::vector<std::vector<Ring>> share_recv(nP);
+            share_recv[pid - 1] = shares_list;
+            
+            #pragma omp parallel for
+            for (int p = 1; p <= nP; ++p) {
+                if (p != pid) {
+                    network->send(p, shares_list.data(), shares_list.size() * sizeof(Ring));
+                }
+            }
+            
+            usleep(latency);
+            
+            #pragma omp parallel for
+            for (int p = 1; p <= nP; ++p) {
+                if (p != pid) {
+                    share_recv[p - 1].resize(num_shares);
+                    network->recv(p, share_recv[p - 1].data(), share_recv[p - 1].size() * sizeof(Ring));
+                }
+            }
+            
+            for (int p = 0; p < nP; ++p) {
+                #pragma omp parallel for
+                for (size_t i = 0; i < num_shares; ++i) {
+                    reconstructed_list[i] += share_recv[p][i];
+                }
+            }
+        }
+    }
+
     OnlineEvaluator::OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                                      PreprocCircuit<Ring> preproc,
                                      common::utils::LevelOrderedCircuit circ,
@@ -88,38 +162,7 @@ namespace graphdb
 
         // Reconstruct the masked input m1
         std::vector<Ring> recon_m1(num_eqz_gates, 0);
-        if (id_ != pKing) {
-            network_->send(pKing, r1_send.data(), r1_send.size() * sizeof(Ring));
-            usleep(latency_);
-            network_->recv(pKing, recon_m1.data(), recon_m1.size() * sizeof(Ring));
-        } else {
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            // King party adds its own share first
-            share_recv[pKing - 1] = r1_send;
-            usleep(latency_);
-            // Receive from all other parties
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    share_recv[pid - 1].resize(num_eqz_gates);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            for (int pid = 0; pid < nP_; ++pid) {
-                #pragma omp parallel for
-                for (int i = 0; i < num_eqz_gates; ++i) {
-                    recon_m1[i] += share_recv[pid][i];
-                }
-            }
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, recon_m1.data(), recon_m1.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
-            
-        }
+        reconstruct(nP_, id_, network_, r1_send, recon_m1, true, latency_);
 
         // Compute hamming distance between bits of m1 and bits of r1
         std::vector<Ring> share_m2(num_eqz_gates, 0);
@@ -149,37 +192,7 @@ namespace graphdb
 
         // Reconstruct the masked input m2
         std::vector<Ring> recon_m2(num_eqz_gates, 0);
-        if (id_ != pKing) {
-            network_->send(pKing, share_m2.data(), share_m2.size() * sizeof(Ring));
-            usleep(latency_);
-            network_->recv(pKing, recon_m2.data(), recon_m2.size() * sizeof(Ring));
-        } else {
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            // King party adds its own share first
-            share_recv[pKing - 1] = share_m2;
-            usleep(latency_);
-            // Receive from all other parties
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    share_recv[pid - 1].resize(num_eqz_gates);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            for (int pid = 0; pid < nP_; ++pid) {
-                #pragma omp parallel for
-                for (int i = 0; i < num_eqz_gates; ++i) {
-                    recon_m2[i] += share_recv[pid][i];
-                }
-            }
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, recon_m2.data(), recon_m2.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
-        }
+        reconstruct(nP_, id_, network_, share_m2, recon_m2, true, latency_);
  
 
         // Compute final output share
@@ -198,7 +211,6 @@ namespace graphdb
 
     void OnlineEvaluator::recEvaluate(const std::vector<common::utils::FIn1Gate> &rec_gates) {
         if (id_ == 0) { return; }
-        int pKing = 1; // Designated king party
         size_t num_rec_gates = rec_gates.size();
         std::vector<Ring> shares_to_send(num_rec_gates);
 
@@ -215,73 +227,7 @@ namespace graphdb
         auto *pre_rec = static_cast<PreprocRecGate<Ring> *>(preproc_.gates[rec_gates[0].out].get());
         bool via_pking = pre_rec->viaPking;
 
-        if (via_pking) {
-            // Reconstruction via king party
-            if (id_ != pKing) {
-                network_->send(pKing, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
-                usleep(latency_);
-                network_->recv(pKing, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-            } else {
-                std::vector<std::vector<Ring>> share_recv(nP_);
-                // King party adds its own share first
-                share_recv[pKing - 1] = shares_to_send;
-                usleep(latency_);
-                // Receive from all other parties
-                #pragma omp parallel for
-                for (int pid = 1; pid <= nP_; ++pid) {
-                    if (pid != pKing) {
-                        share_recv[pid - 1].resize(num_rec_gates);
-                        network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                    }
-                }
-                // Sum all shares
-                for (int pid = 0; pid < nP_; ++pid) {
-                    #pragma omp parallel for
-                    for (size_t i = 0; i < num_rec_gates; ++i) {
-                        reconstructed[i] += share_recv[pid][i];
-                    }
-                }
-                // Send reconstructed values back to all parties
-                #pragma omp parallel for
-                for (int pid = 1; pid <= nP_; ++pid) {
-                    if (pid != pKing) {
-                        network_->send(pid, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-                        network_->flush(pid);
-                    }
-                }
-            }
-        } else {
-            // Direct reconstruction (all parties exchange shares)
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            share_recv[id_ - 1] = shares_to_send;
-            
-            // Send shares to all other parties
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != id_) {
-                    network_->send(pid, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
-                }
-            }
-            
-            usleep(latency_);
-            
-            // Receive shares from all other parties
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != id_) {
-                    share_recv[pid - 1].resize(num_rec_gates);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            
-            // Sum all shares to reconstruct
-            for (int pid = 0; pid < nP_; ++pid) {
-                #pragma omp parallel for
-                for (size_t i = 0; i < num_rec_gates; ++i) {
-                    reconstructed[i] += share_recv[pid][i];
-                }
-            }
-        }
+        reconstruct(nP_, id_, network_, shares_to_send, reconstructed, via_pking, latency_);
 
         // Store reconstructed values in output wires
         #pragma omp parallel for
@@ -537,46 +483,12 @@ namespace graphdb
             shares_to_send[2*i + 1] = v_shares[i];
         }
         
-        if (pre_compact->viaPking) {
-            if (id_ != pKing) {
-                network_->send(pKing, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
-                usleep(latency_);
-                std::vector<Ring> reconstructed(2 * vec_size);
-                network_->recv(pKing, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-                for (size_t i = 0; i < vec_size; ++i) {
-                    u_reconstructed[i] = reconstructed[2*i];
-                    v_reconstructed[i] = reconstructed[2*i + 1];
-                }
-            } else {
-                std::vector<std::vector<Ring>> share_recv(nP_);
-                share_recv[pKing - 1] = shares_to_send;
-                usleep(latency_);
-                #pragma omp parallel for
-                for (int pid = 1; pid <= nP_; ++pid) {
-                    if (pid != pKing) {
-                        share_recv[pid - 1].resize(2 * vec_size);
-                        network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                    }
-                }
-                for (int pid = 0; pid < nP_; ++pid) {
-                    for (size_t i = 0; i < vec_size; ++i) {
-                        u_reconstructed[i] += share_recv[pid][2*i];
-                        v_reconstructed[i] += share_recv[pid][2*i + 1];
-                    }
-                }
-                std::vector<Ring> reconstructed(2 * vec_size);
-                for (size_t i = 0; i < vec_size; ++i) {
-                    reconstructed[2*i] = u_reconstructed[i];
-                    reconstructed[2*i + 1] = v_reconstructed[i];
-                }
-                #pragma omp parallel for
-                for (int pid = 1; pid <= nP_; ++pid) {
-                    if (pid != pKing) {
-                        network_->send(pid, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-                        network_->flush(pid);
-                    }
-                }
-            }
+        std::vector<Ring> reconstructed(2 * vec_size, 0);
+        reconstruct(nP_, id_, network_, shares_to_send, reconstructed, pre_compact->viaPking, latency_);
+        
+        for (size_t i = 0; i < vec_size; ++i) {
+            u_reconstructed[i] = reconstructed[2*i];
+            v_reconstructed[i] = reconstructed[2*i + 1];
         }
         
         // Compute label shares
@@ -761,34 +673,7 @@ namespace graphdb
         
         // Step 4: Reconstruct label_shuffled
         std::vector<Ring> label_reconstructed(vec_size, 0);
-        if (id_ != pKing) {
-            network_->send(pKing, label_shuffled.data(), label_shuffled.size() * sizeof(Ring));
-            usleep(latency_);
-            network_->recv(pKing, label_reconstructed.data(), label_reconstructed.size() * sizeof(Ring));
-        } else {
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            share_recv[pKing - 1] = label_shuffled;
-            usleep(latency_);
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    share_recv[pid - 1].resize(vec_size);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            for (int pid = 0; pid < nP_; ++pid) {
-                for (size_t i = 0; i < vec_size; ++i) {
-                    label_reconstructed[i] += share_recv[pid][i];
-                }
-            }
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, label_reconstructed.data(), label_reconstructed.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
-        }
+        reconstruct(nP_, id_, network_, label_shuffled, label_reconstructed, true, latency_);
         
         // Step 5: Apply public permutation based on reconstructed labels
         std::unordered_map<common::utils::wire_t, Ring> temp_t_outputs;
@@ -896,44 +781,12 @@ namespace graphdb
             shares_to_send[2*i + 1] = v_mult_shares[i];
         }
         
-        if (id_ != pKing) {
-            network_->send(pKing, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
-            usleep(latency_);
-            std::vector<Ring> reconstructed(2 * vec_size);
-            network_->recv(pKing, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-            for (size_t i = 0; i < vec_size; ++i) {
-                u_reconstructed[i] = reconstructed[2*i];
-                v_reconstructed[i] = reconstructed[2*i + 1];
-            }
-        } else {
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            share_recv[pKing - 1] = shares_to_send;
-            usleep(latency_);
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    share_recv[pid - 1].resize(2 * vec_size);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            for (int pid = 0; pid < nP_; ++pid) {
-                for (size_t i = 0; i < vec_size; ++i) {
-                    u_reconstructed[i] += share_recv[pid][2*i];
-                    v_reconstructed[i] += share_recv[pid][2*i + 1];
-                }
-            }
-            std::vector<Ring> reconstructed(2 * vec_size);
-            for (size_t i = 0; i < vec_size; ++i) {
-                reconstructed[2*i] = u_reconstructed[i];
-                reconstructed[2*i + 1] = v_reconstructed[i];
-            }
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
+        std::vector<Ring> reconstructed(2 * vec_size, 0);
+        reconstruct(nP_, id_, network_, shares_to_send, reconstructed, true, latency_);
+        
+        for (size_t i = 0; i < vec_size; ++i) {
+            u_reconstructed[i] = reconstructed[2*i];
+            v_reconstructed[i] = reconstructed[2*i + 1];
         }
         
         // Step 1d: Compute label shares using Beaver triple formula
@@ -1080,34 +933,7 @@ namespace graphdb
         
         // Step 1f: Reconstruct label_shuffled to determine final placement
         std::vector<Ring> label_reconstructed(vec_size, 0);
-        if (id_ != pKing) {
-            network_->send(pKing, label_shuffled.data(), label_shuffled.size() * sizeof(Ring));
-            usleep(latency_);
-            network_->recv(pKing, label_reconstructed.data(), label_reconstructed.size() * sizeof(Ring));
-        } else {
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            share_recv[pKing - 1] = label_shuffled;
-            usleep(latency_);
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    share_recv[pid - 1].resize(vec_size);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            for (int pid = 0; pid < nP_; ++pid) {
-                for (size_t i = 0; i < vec_size; ++i) {
-                    label_reconstructed[i] += share_recv[pid][i];
-                }
-            }
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, label_reconstructed.data(), label_reconstructed.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
-        }
+        reconstruct(nP_, id_, network_, label_shuffled, label_reconstructed, true, latency_);
         
         // Step 1g: Apply public permutation based on reconstructed labels to get compacted vectors
         std::vector<Ring> key_compacted(vec_size, Ring(0));
@@ -1153,44 +979,12 @@ namespace graphdb
             keymult_shares_to_send[2*i + 1] = v_keymult_shares[i];
         }
         
-        if (id_ != pKing) {
-            network_->send(pKing, keymult_shares_to_send.data(), keymult_shares_to_send.size() * sizeof(Ring));
-            usleep(latency_);
-            std::vector<Ring> keymult_reconstructed(2 * vec_size);
-            network_->recv(pKing, keymult_reconstructed.data(), keymult_reconstructed.size() * sizeof(Ring));
-            for (size_t i = 0; i < vec_size; ++i) {
-                u_keymult_reconstructed[i] = keymult_reconstructed[2*i];
-                v_keymult_reconstructed[i] = keymult_reconstructed[2*i + 1];
-            }
-        } else {
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            share_recv[pKing - 1] = keymult_shares_to_send;
-            usleep(latency_);
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    share_recv[pid - 1].resize(2 * vec_size);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            for (int pid = 0; pid < nP_; ++pid) {
-                for (size_t i = 0; i < vec_size; ++i) {
-                    u_keymult_reconstructed[i] += share_recv[pid][2*i];
-                    v_keymult_reconstructed[i] += share_recv[pid][2*i + 1];
-                }
-            }
-            std::vector<Ring> keymult_reconstructed(2 * vec_size);
-            for (size_t i = 0; i < vec_size; ++i) {
-                keymult_reconstructed[2*i] = u_keymult_reconstructed[i];
-                keymult_reconstructed[2*i + 1] = v_keymult_reconstructed[i];
-            }
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, keymult_reconstructed.data(), keymult_reconstructed.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
+        std::vector<Ring> keymult_reconstructed(2 * vec_size, 0);
+        reconstruct(nP_, id_, network_, keymult_shares_to_send, keymult_reconstructed, true, latency_);
+        
+        for (size_t i = 0; i < vec_size; ++i) {
+            u_keymult_reconstructed[i] = keymult_reconstructed[2*i];
+            v_keymult_reconstructed[i] = keymult_reconstructed[2*i + 1];
         }
         
         // Step 3c: Compute multiplication result using Beaver triple formula
@@ -1434,65 +1228,16 @@ namespace graphdb
         }
 
         // King-based reconstruction
-        if (id_ != pKing) {
-            network_->send(pKing, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
-            network_->flush(pKing);
-            
-            std::vector<Ring> reconstructed(2 * t1_vec_size + 2 * t2_vec_size);
-            network_->recv(pKing, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-            usleep(latency_);
-            
-            for (size_t i = 0; i < t1_vec_size; ++i) {
-                u_t1_reconstructed[i] = reconstructed[2*i];
-                v_t1_reconstructed[i] = reconstructed[2*i + 1];
-            }
-            for (size_t i = 0; i < t2_vec_size; ++i) {
-                u_t2_reconstructed[i] = reconstructed[2 * t1_vec_size + 2*i];
-                v_t2_reconstructed[i] = reconstructed[2 * t1_vec_size + 2*i + 1];
-            }
-        } else {
-            // King party: collect, reconstruct, broadcast
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            share_recv[pKing - 1] = shares_to_send;
-            
-            usleep(latency_);
-            
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    share_recv[pid - 1].resize(2 * t1_vec_size + 2 * t2_vec_size);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            
-            for (int pid = 0; pid < nP_; ++pid) {
-                for (size_t i = 0; i < t1_vec_size; ++i) {
-                    u_t1_reconstructed[i] += share_recv[pid][2*i];
-                    v_t1_reconstructed[i] += share_recv[pid][2*i + 1];
-                }
-                for (size_t i = 0; i < t2_vec_size; ++i) {
-                    u_t2_reconstructed[i] += share_recv[pid][2 * t1_vec_size + 2*i];
-                    v_t2_reconstructed[i] += share_recv[pid][2 * t1_vec_size + 2*i + 1];
-                }
-            }
-            
-            std::vector<Ring> reconstructed(2 * t1_vec_size + 2 * t2_vec_size);
-            for (size_t i = 0; i < t1_vec_size; ++i) {
-                reconstructed[2*i] = u_t1_reconstructed[i];
-                reconstructed[2*i + 1] = v_t1_reconstructed[i];
-            }
-            for (size_t i = 0; i < t2_vec_size; ++i) {
-                reconstructed[2 * t1_vec_size + 2*i] = u_t2_reconstructed[i];
-                reconstructed[2 * t1_vec_size + 2*i + 1] = v_t2_reconstructed[i];
-            }
-            
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
+        std::vector<Ring> reconstructed(2 * t1_vec_size + 2 * t2_vec_size, 0);
+        reconstruct(nP_, id_, network_, shares_to_send, reconstructed, true, latency_);
+        
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            u_t1_reconstructed[i] = reconstructed[2*i];
+            v_t1_reconstructed[i] = reconstructed[2*i + 1];
+        }
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            u_t2_reconstructed[i] = reconstructed[2 * t1_vec_size + 2*i];
+            v_t2_reconstructed[i] = reconstructed[2 * t1_vec_size + 2*i + 1];
         }
         
         // Step 1d & 2d: Compute label shares for T1 and T2
@@ -1727,59 +1472,14 @@ namespace graphdb
             labels_to_send[t1_vec_size + i] = label_t2_shuffled[i];
         }
         
-        if (id_ != pKing) {
-            network_->send(pKing, labels_to_send.data(), labels_to_send.size() * sizeof(Ring));
-            network_->flush(pKing);
-            
-            std::vector<Ring> labels_reconstructed(t1_vec_size + t2_vec_size);
-            network_->recv(pKing, labels_reconstructed.data(), labels_reconstructed.size() * sizeof(Ring));
-            usleep(latency_);
-            
-            for (size_t i = 0; i < t1_vec_size; ++i) {
-                label_t1_reconstructed[i] = labels_reconstructed[i];
-            }
-            for (size_t i = 0; i < t2_vec_size; ++i) {
-                label_t2_reconstructed[i] = labels_reconstructed[t1_vec_size + i];
-            }
-        } else {
-            // King party: collect, reconstruct, broadcast
-            std::vector<std::vector<Ring>> label_recv(nP_);
-            label_recv[pKing - 1] = labels_to_send;
-            
-            usleep(latency_);
-            
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    label_recv[pid - 1].resize(t1_vec_size + t2_vec_size);
-                    network_->recv(pid, label_recv[pid - 1].data(), (t1_vec_size + t2_vec_size) * sizeof(Ring));
-                }
-            }
-            
-            for (int pid = 0; pid < nP_; ++pid) {
-                for (size_t i = 0; i < t1_vec_size; ++i) {
-                    label_t1_reconstructed[i] += label_recv[pid][i];
-                }
-                for (size_t i = 0; i < t2_vec_size; ++i) {
-                    label_t2_reconstructed[i] += label_recv[pid][t1_vec_size + i];
-                }
-            }
-            
-            std::vector<Ring> labels_reconstructed(t1_vec_size + t2_vec_size);
-            for (size_t i = 0; i < t1_vec_size; ++i) {
-                labels_reconstructed[i] = label_t1_reconstructed[i];
-            }
-            for (size_t i = 0; i < t2_vec_size; ++i) {
-                labels_reconstructed[t1_vec_size + i] = label_t2_reconstructed[i];
-            }
-            
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, labels_reconstructed.data(), labels_reconstructed.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
+        std::vector<Ring> labels_reconstructed(t1_vec_size + t2_vec_size, 0);
+        reconstruct(nP_, id_, network_, labels_to_send, labels_reconstructed, true, latency_);
+        
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            label_t1_reconstructed[i] = labels_reconstructed[i];
+        }
+        for (size_t i = 0; i < t2_vec_size; ++i) {
+            label_t2_reconstructed[i] = labels_reconstructed[t1_vec_size + i];
         }
         
         // Step 1g & 2g: Apply public permutation based on reconstructed labels
@@ -1837,53 +1537,12 @@ namespace graphdb
             shares_to_send_mult[2*i + 1] = v_key_shares[i];
         }
         
-        if (id_ != pKing) {
-            network_->send(pKing, shares_to_send_mult.data(), shares_to_send_mult.size() * sizeof(Ring));
-            network_->flush(pKing);
-            
-            std::vector<Ring> reconstructed_mult(2 * t1_vec_size);
-            network_->recv(pKing, reconstructed_mult.data(), reconstructed_mult.size() * sizeof(Ring));
-            usleep(latency_);
-            
-            for (size_t i = 0; i < t1_vec_size; ++i) {
-                u_diff_reconstructed[i] = reconstructed_mult[2*i];
-                v_key_reconstructed[i] = reconstructed_mult[2*i + 1];
-            }
-        } else {
-            // King party: collect, reconstruct, broadcast
-            std::vector<std::vector<Ring>> share_recv_mult(nP_);
-            share_recv_mult[pKing - 1] = shares_to_send_mult;
-            
-            usleep(latency_);
-            
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    share_recv_mult[pid - 1].resize(2 * t1_vec_size);
-                    network_->recv(pid, share_recv_mult[pid - 1].data(), share_recv_mult[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            
-            for (int pid = 0; pid < nP_; ++pid) {
-                for (size_t i = 0; i < t1_vec_size; ++i) {
-                    u_diff_reconstructed[i] += share_recv_mult[pid][2*i];
-                    v_key_reconstructed[i] += share_recv_mult[pid][2*i + 1];
-                }
-            }
-            
-            std::vector<Ring> reconstructed_mult(2 * t1_vec_size);
-            for (size_t i = 0; i < t1_vec_size; ++i) {
-                reconstructed_mult[2*i] = u_diff_reconstructed[i];
-                reconstructed_mult[2*i + 1] = v_key_reconstructed[i];
-            }
-            
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != pKing) {
-                    network_->send(pid, reconstructed_mult.data(), reconstructed_mult.size() * sizeof(Ring));
-                    network_->flush(pid);
-                }
-            }
+        std::vector<Ring> reconstructed_mult(2 * t1_vec_size, 0);
+        reconstruct(nP_, id_, network_, shares_to_send_mult, reconstructed_mult, true, latency_);
+        
+        for (size_t i = 0; i < t1_vec_size; ++i) {
+            u_diff_reconstructed[i] = reconstructed_mult[2*i];
+            v_key_reconstructed[i] = reconstructed_mult[2*i + 1];
         }
         
         // Step 3d: Compute multiplication result shares
@@ -2076,92 +1735,13 @@ namespace graphdb
             shares_to_send[2*i + 1] = v_shares[i];
         }
         
-        if (via_pking) {
-            // ============ Reconstruction via King Party ============
-            if (id_ != pKing) {
-                // Non-king parties: send shares to king, receive reconstructed values
-                network_->send(pKing, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
-                usleep(latency_);
-                
-                std::vector<Ring> reconstructed(2 * num_mult_gates);
-                network_->recv(pKing, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-                
-                // Unpack reconstructed values
-                for (size_t i = 0; i < num_mult_gates; ++i) {
-                    u_reconstructed[i] = reconstructed[2*i];
-                    v_reconstructed[i] = reconstructed[2*i + 1];
-                }
-            } else {
-                // King party: collect all shares, reconstruct, broadcast
-                std::vector<std::vector<Ring>> share_recv(nP_);
-                share_recv[pKing - 1] = shares_to_send;
-                
-                usleep(latency_);
-                
-                // Receive shares from all other parties
-                #pragma omp parallel for
-                for (int pid = 1; pid <= nP_; ++pid) {
-                    if (pid != pKing) {
-                        share_recv[pid - 1].resize(2 * num_mult_gates);
-                        network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                    }
-                }
-                
-                // Sum all shares to reconstruct u and v
-                for (int pid = 0; pid < nP_; ++pid) {
-                    for (size_t i = 0; i < num_mult_gates; ++i) {
-                        u_reconstructed[i] += share_recv[pid][2*i];
-                        v_reconstructed[i] += share_recv[pid][2*i + 1];
-                    }
-                }
-                
-                // Pack reconstructed values for broadcasting
-                std::vector<Ring> reconstructed(2 * num_mult_gates);
-                for (size_t i = 0; i < num_mult_gates; ++i) {
-                    reconstructed[2*i] = u_reconstructed[i];
-                    reconstructed[2*i + 1] = v_reconstructed[i];
-                }
-                
-                // Broadcast reconstructed values to all other parties
-                #pragma omp parallel for
-                for (int pid = 1; pid <= nP_; ++pid) {
-                    if (pid != pKing) {
-                        network_->send(pid, reconstructed.data(), reconstructed.size() * sizeof(Ring));
-                        network_->flush(pid);
-                    }
-                }
-            }
-        } else {
-            // ============ Direct Reconstruction (All-to-All) ============
-            std::vector<std::vector<Ring>> share_recv(nP_);
-            share_recv[id_ - 1] = shares_to_send;
-            
-            // Send shares to all other parties
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != id_) {
-                    network_->send(pid, shares_to_send.data(), shares_to_send.size() * sizeof(Ring));
-                }
-            }
-            
-            usleep(latency_);
-            
-            // Receive shares from all other parties
-            #pragma omp parallel for
-            for (int pid = 1; pid <= nP_; ++pid) {
-                if (pid != id_) {
-                    share_recv[pid - 1].resize(2 * num_mult_gates);
-                    network_->recv(pid, share_recv[pid - 1].data(), share_recv[pid - 1].size() * sizeof(Ring));
-                }
-            }
-            
-            // Sum all shares to reconstruct u and v
-            for (int pid = 0; pid < nP_; ++pid) {
-                for (size_t i = 0; i < num_mult_gates; ++i) {
-                    u_reconstructed[i] += share_recv[pid][2*i];
-                    v_reconstructed[i] += share_recv[pid][2*i + 1];
-                }
-            }
+        std::vector<Ring> reconstructed(2 * num_mult_gates, 0);
+        reconstruct(nP_, id_, network_, shares_to_send, reconstructed, via_pking, latency_);
+        
+        // Unpack reconstructed values
+        for (size_t i = 0; i < num_mult_gates; ++i) {
+            u_reconstructed[i] = reconstructed[2*i];
+            v_reconstructed[i] = reconstructed[2*i + 1];
         }
         
         // Step 3: Compute multiplication result using Beaver triple formula

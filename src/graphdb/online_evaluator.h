@@ -25,7 +25,12 @@ namespace graphdb {
     std::vector<Ring> wires_;
     std::shared_ptr<ThreadPool> tpool_;
 
-    // write reconstruction function
+    // Helper function to reconstruct shares via king party or direct all-to-all
+    static void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
+                           const std::vector<Ring>& shares_list,
+                           std::vector<Ring>& reconstructed_list,
+                           bool via_pking, int latency);
+
   public:
     OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                     PreprocCircuit<Ring> preproc,
