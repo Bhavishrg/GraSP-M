@@ -1313,7 +1313,7 @@ namespace graphdb
         for (size_t i = 0; i < vec_size; ++i) {
             wires_[gi_gate.outs[i]] = group_index_shares[i];
             wires_[gi_gate.outs[vec_size + i]] = key_shares[i];
-            wires_[gi_gate.outs[2 * vec_size + i]] = value_shares[i];
+            wires_[gi_gate.outs[2 * vec_size + i]] = v_shares[i];
         }
         
     }
