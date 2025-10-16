@@ -78,6 +78,8 @@ namespace graphdb {
 
     void groupwisePropagateEvaluateParallel(const std::vector<common::utils::SIMDOGate> &gp_gates);
 
+    void sortEvaluate(const std::vector<common::utils::SIMDOGate> &sort_gates);
+
     std::vector<Ring> getOutputs();
 
     Ring reconstruct(AddShare<Ring> &shares);

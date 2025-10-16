@@ -92,6 +92,10 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
       os << "Group-wise Propagate";
       break;
 
+    case kSort:
+      os << "Sort";
+      break;
+
     default:
       os << "Invalid";
       break;

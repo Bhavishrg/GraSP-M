@@ -252,6 +252,45 @@ struct PreprocGroupwisePropagateGate : public PreprocGate<R> {
   PreprocGroupwisePropagateGate() = default;
 };
 
+// Preprocessing for Sort gate
+// Contains 32 compaction operations (one for each bit from MSB to LSB)
+// Plus final shuffle for hiding the permutation
+template <class R>
+struct PreprocSortGate : public PreprocGate<R> {
+  // Array of 32 compaction preprocessing structures (one per bit)
+  // Index 0 corresponds to MSB (bit 31), index 31 corresponds to LSB (bit 0)
+  std::vector<std::vector<AddShare<R>>> shuffle_a;  // [32][vec_size]
+  std::vector<std::vector<TPShare<R>>> shuffle_tp_a;
+  std::vector<std::vector<AddShare<R>>> shuffle_b;
+  std::vector<std::vector<TPShare<R>>> shuffle_tp_b;
+  std::vector<std::vector<AddShare<R>>> shuffle_c;
+  std::vector<std::vector<TPShare<R>>> shuffle_tp_c;
+  std::vector<std::vector<Ring>> shuffle_delta;  // [32][vec_size]
+  std::vector<std::vector<int>> shuffle_pi;  // [32][vec_size]
+  std::vector<std::vector<std::vector<int>>> shuffle_tp_pi_all;  // [32][nP][vec_size]
+  
+  // Multiplication triples for each of the 32 compact operations
+  std::vector<std::vector<AddShare<R>>> mult_triple_a;  // [32][vec_size]
+  std::vector<std::vector<TPShare<R>>> mult_tp_triple_a;
+  std::vector<std::vector<AddShare<R>>> mult_triple_b;
+  std::vector<std::vector<TPShare<R>>> mult_tp_triple_b;
+  std::vector<std::vector<AddShare<R>>> mult_triple_c;
+  std::vector<std::vector<TPShare<R>>> mult_tp_triple_c;
+  
+  // Final shuffle preprocessing for hiding the permutation before reconstruction
+  std::vector<AddShare<R>> final_shuffle_a;
+  std::vector<TPShare<R>> final_shuffle_tp_a;
+  std::vector<AddShare<R>> final_shuffle_b;
+  std::vector<TPShare<R>> final_shuffle_tp_b;
+  std::vector<AddShare<R>> final_shuffle_c;
+  std::vector<TPShare<R>> final_shuffle_tp_c;
+  std::vector<Ring> final_shuffle_delta;
+  std::vector<int> final_shuffle_pi;
+  std::vector<std::vector<int>> final_shuffle_tp_pi_all;
+  
+  PreprocSortGate() = default;
+};
+
 // Preprocessed data for the circuit.
 template <class R>
 struct PreprocCircuit {

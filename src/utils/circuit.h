@@ -34,6 +34,7 @@ enum GateType {
   kCompact,
   kGroupwiseIndex,
   kGroupwisePropagate,
+  kSort,
   kInvalid,
   NumGates
 };
@@ -490,6 +491,45 @@ class Circuit {
     return {t_compacted, p_compacted};
   }
 
+  // Add a Sort gate that takes bit-decomposed 32-bit integers and returns sorted output
+  // Input format: [bit0_elem0, bit1_elem0, ..., bit31_elem0, bit0_elem1, ..., bit31_elem(n-1)]
+  // Each consecutive 32 wires represent one 32-bit value in bit-decomposed form
+  // Returns sorted values in the same bit-decomposed format
+  std::vector<wire_t> addSortGate(
+      const std::vector<wire_t>& bit_decomposed_input,
+      const std::vector<std::vector<int>>& permutation) {
+    
+    // Input should be divisible by 32 (32 bits per element)
+    if (bit_decomposed_input.size() % 32 != 0) {
+      throw std::invalid_argument("Input size must be divisible by 32 (32 bits per element).");
+    }
+    
+    size_t total_wires = bit_decomposed_input.size();
+    size_t vec_size = total_wires / 32;  // Number of 32-bit integers
+    
+    if (vec_size == 0) {
+      throw std::invalid_argument("At least one 32-bit element is required.");
+    }
+    
+    // Validate input wires
+    for (size_t i = 0; i < total_wires; i++) {
+      if (!isWireValid(bit_decomposed_input[i])) {
+        throw std::invalid_argument("Invalid wire ID in bit_decomposed_input.");
+      }
+    }
+    
+    // Create output wires: 32 * vec_size wires (same structure as input)
+    std::vector<wire_t> sorted_output(total_wires);
+    for (size_t i = 0; i < total_wires; i++) {
+      sorted_output[i] = num_wires + i;
+    }
+    
+    gates_.push_back(std::make_shared<SIMDOGate>(GateType::kSort, 0, bit_decomposed_input, sorted_output, permutation));
+    num_wires += total_wires;
+    
+    return sorted_output;
+  }
+
 
 
 
@@ -613,6 +653,19 @@ class Circuit {
           break;
         }
 
+        case GateType::kSort: {
+          const auto* g = static_cast<SIMDOGate*>(gate.get());
+          size_t gate_depth = 0;
+          for (size_t i = 0; i < g->in.size(); i++) {
+            gate_depth = std::max({gate_level[g->in[i]], gate_depth});
+          }
+          for (int i = 0; i < g->outs.size(); i++) {
+            gate_level[g->outs[i]] = gate_depth + 1;
+          }
+          depth = std::max(depth, gate_level[gate->outs[0]]);
+          break;
+        }
+
         default:
           break;
       }
@@ -623,7 +676,7 @@ class Circuit {
     std::vector<std::vector<gate_ptr_t>> gates_by_level(depth + 1);
     for (const auto& gate : gates_) {
       res.count[gate->type]++;
-      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kGroupwiseIndex || gate->type == GateType::kGroupwisePropagate) {
+      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kGroupwiseIndex || gate->type == GateType::kGroupwisePropagate || gate->type == GateType::kSort) {
         gates_by_level[gate_level[gate->outs[0]]].push_back(gate);
       } else {
         gates_by_level[gate_level[gate->out]].push_back(gate);

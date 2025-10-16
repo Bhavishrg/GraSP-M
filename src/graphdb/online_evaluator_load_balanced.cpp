@@ -2700,6 +2700,398 @@ namespace graphdb
         }
     }
 
+    void OnlineEvaluator::sortEvaluate(const std::vector<common::utils::SIMDOGate> &sort_gates) {
+        if (id_ == 0 || sort_gates.empty()) { return; }
+        
+        for (const auto& sort_gate : sort_gates) {
+            auto *pre_sort = static_cast<PreprocSortGate<Ring> *>(preproc_.gates[sort_gate.out].get());
+            
+            // Input: [bit0_elem0, bit1_elem0, ..., bit31_elem0, bit0_elem1, ...]
+            size_t total_size = sort_gate.in.size();
+            size_t vec_size = total_size / 32;
+            
+            if (vec_size == 0 || total_size % 32 != 0) {
+                throw std::runtime_error("Sort gate input size must be divisible by 32");
+            }
+            
+            // Initialize payload as identity permutation [0, 1, 2, ..., vec_size-1] (0-indexed)
+            std::vector<Ring> payload_shares(vec_size);
+            for (size_t i = 0; i < vec_size; ++i) {
+                if (id_ == 1) {
+                    payload_shares[i] = static_cast<Ring>(i);
+                } else {
+                    payload_shares[i] = Ring(0);
+                }
+            }
+            
+            // Storage for bits being processed
+            // bits_current[i] = shares of bit i for all elements (after compaction)
+            std::vector<std::vector<Ring>> bits_current(32, std::vector<Ring>(vec_size));
+            
+            // Initialize: extract bit-decomposed input
+            // Input format: consecutive 32 bits per element
+            for (size_t elem = 0; elem < vec_size; ++elem) {
+                for (size_t bit = 0; bit < 32; ++bit) {
+                    bits_current[bit][elem] = wires_[sort_gate.in[elem * 32 + bit]];
+                }
+            }
+            
+            // Main loop: process each bit from MSB (bit 31) to LSB (bit 0)
+            // In our storage: bit 31 is MSB, bit 0 is LSB
+            for (int bit_idx = 31; bit_idx >= 0; --bit_idx) {
+                // For preprocessing, we use array index (0 = first iteration = MSB)
+                int preproc_idx = 31 - bit_idx;
+                
+                // Extract current bit as key vector
+                std::vector<Ring> key_shares = bits_current[bit_idx];
+                
+                // Prepare payloads: all higher bits + current payload
+                std::vector<std::vector<Ring>> compact_payloads;
+                for (int higher_bit = 31; higher_bit > bit_idx; --higher_bit) {
+                    compact_payloads.push_back(bits_current[higher_bit]);
+                }
+                compact_payloads.push_back(payload_shares);
+                
+                size_t num_payloads = compact_payloads.size();
+                
+                // Perform compaction using the preprocessing for this bit
+                // This is similar to compactEvaluate but using pre_sort data
+                
+                // Step 1: Compute prefix sums c0 and c1 locally
+                std::vector<Ring> c1_shares(vec_size);
+                std::vector<Ring> c0_shares(vec_size);
+                
+                c1_shares[0] = key_shares[0];
+                if (id_ == 1) {
+                    c0_shares[0] = Ring(1) - c1_shares[0];
+                } else {
+                    c0_shares[0] = -c1_shares[0];
+                }
+                
+                for (size_t j = 1; j < vec_size; ++j) {
+                    c1_shares[j] = c1_shares[j-1] + key_shares[j];
+                    if (id_ == 1) {
+                        c0_shares[j] = Ring(j+1) - c1_shares[j];
+                    } else {
+                        c0_shares[j] = -c1_shares[j];
+                    }
+                }
+                
+                // Step 2: Compute label shares using multiplications
+                std::vector<Ring> label_shares(vec_size);
+                Ring c1_last = c1_shares[vec_size - 1];
+                
+                std::vector<Ring> u_shares(vec_size);
+                std::vector<Ring> v_shares(vec_size);
+                
+                for (size_t j = 0; j < vec_size; ++j) {
+                    Ring diff_term = c0_shares[j] + c1_last - c1_shares[j];
+                    Ring one_minus_t;
+                    if (id_ == 1) {
+                        one_minus_t = Ring(1) - key_shares[j];
+                    } else {
+                        one_minus_t = -key_shares[j];
+                    }
+                    
+                    u_shares[j] = diff_term - pre_sort->mult_triple_a[preproc_idx][j].valueAt();
+                    v_shares[j] = one_minus_t - pre_sort->mult_triple_b[preproc_idx][j].valueAt();
+                }
+                
+                std::vector<Ring> u_reconstructed(vec_size, 0);
+                std::vector<Ring> v_reconstructed(vec_size, 0);
+                
+                std::vector<Ring> shares_to_send(2 * vec_size);
+                for (size_t i = 0; i < vec_size; ++i) {
+                    shares_to_send[2*i] = u_shares[i];
+                    shares_to_send[2*i + 1] = v_shares[i];
+                }
+                
+                std::vector<Ring> reconstructed(2 * vec_size, 0);
+                reconstruct(nP_, id_, network_, shares_to_send, reconstructed, use_pking_, latency_);
+                
+                for (size_t i = 0; i < vec_size; ++i) {
+                    u_reconstructed[i] = reconstructed[2*i];
+                    v_reconstructed[i] = reconstructed[2*i + 1];
+                }
+                
+                for (size_t j = 0; j < vec_size; ++j) {
+                    Ring u = u_reconstructed[j];
+                    Ring v = v_reconstructed[j];
+                    Ring a = pre_sort->mult_triple_a[preproc_idx][j].valueAt();
+                    Ring b = pre_sort->mult_triple_b[preproc_idx][j].valueAt();
+                    Ring c = pre_sort->mult_triple_c[preproc_idx][j].valueAt();
+                    
+                    Ring mult_result;
+                    if (id_ == 1) {
+                        mult_result = u * v + u * b + v * a + c;
+                        label_shares[j] = mult_result + c1_shares[j] - Ring(1);
+                    } else {
+                        mult_result = u * b + v * a + c;
+                        label_shares[j] = mult_result + c1_shares[j];
+                    }
+                }
+                
+                // Step 3: Shuffle key, all payloads, and label
+                std::vector<Ring> key_shuffled(vec_size);
+                std::vector<std::vector<Ring>> payloads_shuffled(num_payloads, std::vector<Ring>(vec_size));
+                std::vector<Ring> label_shuffled(vec_size);
+                
+                // Compute z = input + a for shuffle
+                std::vector<Ring> z_key(vec_size);
+                std::vector<std::vector<Ring>> z_payloads(num_payloads, std::vector<Ring>(vec_size));
+                std::vector<Ring> z_label(vec_size);
+                
+                for (size_t i = 0; i < vec_size; ++i) {
+                    z_key[i] = key_shares[i] + pre_sort->shuffle_a[preproc_idx][i].valueAt();
+                    z_label[i] = label_shares[i] + pre_sort->shuffle_a[preproc_idx][i].valueAt();
+                }
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        z_payloads[p][i] = compact_payloads[p][i] + pre_sort->shuffle_a[preproc_idx][i].valueAt();
+                    }
+                }
+                
+                // Shuffle protocol (same as in compactEvaluate)
+                if (id_ == 1) {
+                    std::vector<std::vector<Ring>> z_key_recv(nP_);
+                    std::vector<std::vector<std::vector<Ring>>> z_payloads_recv(nP_, std::vector<std::vector<Ring>>(num_payloads));
+                    std::vector<std::vector<Ring>> z_label_recv(nP_);
+                    
+                    z_key_recv[0] = z_key;
+                    z_payloads_recv[0] = z_payloads;
+                    z_label_recv[0] = z_label;
+                    
+                    #pragma omp parallel for
+                    for (int pid = 2; pid <= nP_; ++pid) {
+                        z_key_recv[pid - 1].resize(vec_size);
+                        z_label_recv[pid - 1].resize(vec_size);
+                        network_->recv(pid, z_key_recv[pid - 1].data(), vec_size * sizeof(Ring));
+                        for (size_t p = 0; p < num_payloads; ++p) {
+                            z_payloads_recv[pid - 1][p].resize(vec_size);
+                            network_->recv(pid, z_payloads_recv[pid - 1][p].data(), vec_size * sizeof(Ring));
+                        }
+                        network_->recv(pid, z_label_recv[pid - 1].data(), vec_size * sizeof(Ring));
+                    }
+                    usleep(latency_);
+                    
+                    std::vector<Ring> z_key_sum(vec_size, 0);
+                    std::vector<std::vector<Ring>> z_payloads_sum(num_payloads, std::vector<Ring>(vec_size, 0));
+                    std::vector<Ring> z_label_sum(vec_size, 0);
+                    
+                    for (int pid = 0; pid < nP_; ++pid) {
+                        for (size_t i = 0; i < vec_size; ++i) {
+                            z_key_sum[i] += z_key_recv[pid][i];
+                            z_label_sum[i] += z_label_recv[pid][i];
+                        }
+                        for (size_t p = 0; p < num_payloads; ++p) {
+                            for (size_t i = 0; i < vec_size; ++i) {
+                                z_payloads_sum[p][i] += z_payloads_recv[pid][p][i];
+                            }
+                        }
+                    }
+                    
+                    std::vector<Ring> z_key_perm(vec_size);
+                    std::vector<std::vector<Ring>> z_payloads_perm(num_payloads, std::vector<Ring>(vec_size));
+                    std::vector<Ring> z_label_perm(vec_size);
+                    
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        int pi_i = pre_sort->shuffle_pi[preproc_idx][i];
+                        z_key_perm[i] = z_key_sum[pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt();
+                        z_label_perm[i] = z_label_sum[pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt();
+                        
+                        key_shuffled[i] = pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                        label_shuffled[i] = pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                    }
+                    for (size_t p = 0; p < num_payloads; ++p) {
+                        for (size_t i = 0; i < vec_size; ++i) {
+                            int pi_i = pre_sort->shuffle_pi[preproc_idx][i];
+                            z_payloads_perm[p][i] = z_payloads_sum[p][pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt();
+                            payloads_shuffled[p][i] = pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                        }
+                    }
+                    
+                    network_->send(2, z_key_perm.data(), vec_size * sizeof(Ring));
+                    for (size_t p = 0; p < num_payloads; ++p) {
+                        network_->send(2, z_payloads_perm[p].data(), vec_size * sizeof(Ring));
+                    }
+                    network_->send(2, z_label_perm.data(), vec_size * sizeof(Ring));
+                    
+                } else {
+                    network_->send(1, z_key.data(), vec_size * sizeof(Ring));
+                    for (size_t p = 0; p < num_payloads; ++p) {
+                        network_->send(1, z_payloads[p].data(), vec_size * sizeof(Ring));
+                    }
+                    network_->send(1, z_label.data(), vec_size * sizeof(Ring));
+                    network_->flush(1);
+                    
+                    std::vector<Ring> z_key_recv(vec_size);
+                    std::vector<std::vector<Ring>> z_payloads_recv(num_payloads, std::vector<Ring>(vec_size));
+                    std::vector<Ring> z_label_recv(vec_size);
+                    
+                    network_->recv(id_ - 1, z_key_recv.data(), vec_size * sizeof(Ring));
+                    for (size_t p = 0; p < num_payloads; ++p) {
+                        network_->recv(id_ - 1, z_payloads_recv[p].data(), vec_size * sizeof(Ring));
+                    }
+                    network_->recv(id_ - 1, z_label_recv.data(), vec_size * sizeof(Ring));
+                    usleep(latency_);
+                    
+                    std::vector<Ring> z_key_send(vec_size);
+                    std::vector<std::vector<Ring>> z_payloads_send(num_payloads, std::vector<Ring>(vec_size));
+                    std::vector<Ring> z_label_send(vec_size);
+                    
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        int pi_i = pre_sort->shuffle_pi[preproc_idx][i];
+                        
+                        if (id_ != nP_) {
+                            z_key_send[i] = z_key_recv[pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt();
+                            z_label_send[i] = z_label_recv[pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt();
+                            
+                            key_shuffled[i] = pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                            label_shuffled[i] = pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                        } else {
+                            z_key_send[i] = z_key_recv[pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt() - 
+                                           pre_sort->shuffle_delta[preproc_idx][i];
+                            z_label_send[i] = z_label_recv[pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt() - 
+                                             pre_sort->shuffle_delta[preproc_idx][i];
+                            
+                            key_shuffled[i] = z_key_send[i] + pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                            label_shuffled[i] = z_label_send[i] + pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                        }
+                    }
+                    
+                    for (size_t p = 0; p < num_payloads; ++p) {
+                        for (size_t i = 0; i < vec_size; ++i) {
+                            int pi_i = pre_sort->shuffle_pi[preproc_idx][i];
+                            
+                            if (id_ != nP_) {
+                                z_payloads_send[p][i] = z_payloads_recv[p][pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt();
+                                payloads_shuffled[p][i] = pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                            } else {
+                                z_payloads_send[p][i] = z_payloads_recv[p][pi_i] + pre_sort->shuffle_b[preproc_idx][pi_i].valueAt() - 
+                                                       pre_sort->shuffle_delta[preproc_idx][i];
+                                payloads_shuffled[p][i] = z_payloads_send[p][i] + pre_sort->shuffle_c[preproc_idx][i].valueAt();
+                            }
+                        }
+                    }
+                    
+                    if (id_ != nP_) {
+                        network_->send(id_ + 1, z_key_send.data(), vec_size * sizeof(Ring));
+                        for (size_t p = 0; p < num_payloads; ++p) {
+                            network_->send(id_ + 1, z_payloads_send[p].data(), vec_size * sizeof(Ring));
+                        }
+                        network_->send(id_ + 1, z_label_send.data(), vec_size * sizeof(Ring));
+                    }
+                }
+                
+                // Step 4: Reconstruct label (don't need to reconstruct key or payloads)
+                std::vector<Ring> label_reconstructed(vec_size, 0);
+                reconstruct(nP_, id_, network_, label_shuffled, label_reconstructed, use_pking_, latency_);
+                
+                // Step 5: Apply permutation based on reconstructed labels
+                // Reorder key, payloads based on label indices
+                std::vector<Ring> key_compacted(vec_size);
+                std::vector<std::vector<Ring>> payloads_compacted(num_payloads, std::vector<Ring>(vec_size));
+                
+                for (size_t i = 0; i < vec_size; ++i) {
+                    int idx_perm = static_cast<int>(label_reconstructed[i]);
+                    if (idx_perm >= 0 && idx_perm < vec_size) {
+                        key_compacted[idx_perm] = key_shuffled[i];
+                        for (size_t p = 0; p < num_payloads; ++p) {
+                            payloads_compacted[p][idx_perm] = payloads_shuffled[p][i];
+                        }
+                    }
+                }
+                
+                // Update for next iteration
+                bits_current[bit_idx] = key_compacted;
+                for (int higher_bit = 31, p = 0; higher_bit > bit_idx; --higher_bit, ++p) {
+                    bits_current[higher_bit] = payloads_compacted[p];
+                }
+                payload_shares = payloads_compacted[num_payloads - 1];
+            }
+            
+            // After all 32 iterations, payload_shares contains the sorting permutation (0-indexed)
+            // Now shuffle and reveal the permutation
+            std::vector<Ring> z_perm(vec_size);
+            for (size_t i = 0; i < vec_size; ++i) {
+                z_perm[i] = payload_shares[i] + pre_sort->final_shuffle_a[i].valueAt();
+            }
+            
+            std::vector<Ring> payload_shuffled(vec_size);
+            
+            // Final shuffle protocol
+            if (id_ == 1) {
+                std::vector<std::vector<Ring>> z_perm_recv(nP_);
+                z_perm_recv[0] = z_perm;
+                
+                #pragma omp parallel for
+                for (int pid = 2; pid <= nP_; ++pid) {
+                    z_perm_recv[pid - 1].resize(vec_size);
+                    network_->recv(pid, z_perm_recv[pid - 1].data(), vec_size * sizeof(Ring));
+                }
+                usleep(latency_);
+                
+                std::vector<Ring> z_perm_sum(vec_size, 0);
+                for (int pid = 0; pid < nP_; ++pid) {
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        z_perm_sum[i] += z_perm_recv[pid][i];
+                    }
+                }
+                
+                std::vector<Ring> z_perm_perm(vec_size);
+                for (size_t i = 0; i < vec_size; ++i) {
+                    int pi_i = pre_sort->final_shuffle_pi[i];
+                    z_perm_perm[i] = z_perm_sum[pi_i] + pre_sort->final_shuffle_b[pi_i].valueAt();
+                    payload_shuffled[i] = pre_sort->final_shuffle_c[i].valueAt();
+                }
+                
+                network_->send(2, z_perm_perm.data(), vec_size * sizeof(Ring));
+                
+            } else {
+                network_->send(1, z_perm.data(), vec_size * sizeof(Ring));
+                network_->flush(1);
+                
+                std::vector<Ring> z_perm_recv(vec_size);
+                network_->recv(id_ - 1, z_perm_recv.data(), vec_size * sizeof(Ring));
+                usleep(latency_);
+                
+                std::vector<Ring> z_perm_send(vec_size);
+                for (size_t i = 0; i < vec_size; ++i) {
+                    int pi_i = pre_sort->final_shuffle_pi[i];
+                    
+                    if (id_ != nP_) {
+                        z_perm_send[i] = z_perm_recv[pi_i] + pre_sort->final_shuffle_b[pi_i].valueAt();
+                        payload_shuffled[i] = pre_sort->final_shuffle_c[i].valueAt();
+                    } else {
+                        z_perm_send[i] = z_perm_recv[pi_i] + pre_sort->final_shuffle_b[pi_i].valueAt() - 
+                                        pre_sort->final_shuffle_delta[i];
+                        payload_shuffled[i] = z_perm_send[i] + pre_sort->final_shuffle_c[i].valueAt();
+                    }
+                }
+                
+                if (id_ != nP_) {
+                    network_->send(id_ + 1, z_perm_send.data(), vec_size * sizeof(Ring));
+                }
+            }
+            
+            // Reconstruct the permutation
+            std::vector<Ring> perm_reconstructed(vec_size, 0);
+            reconstruct(nP_, id_, network_, payload_shuffled, perm_reconstructed, use_pking_, latency_);
+            
+            // Final step: Rearrange all input wires according to revealed permutation
+            // For each element, all 32 bits move together
+            for (size_t elem = 0; elem < vec_size; ++elem) {
+                int perm_idx = static_cast<int>(perm_reconstructed[elem]);
+                if (perm_idx >= 0 && perm_idx < vec_size) {
+                    // Copy all 32 bits from input element perm_idx to output element elem
+                    for (size_t bit = 0; bit < 32; ++bit) {
+                        wires_[sort_gate.outs[elem * 32 + bit]] = wires_[sort_gate.in[perm_idx * 32 + bit]];
+                    }
+                }
+            }
+        }
+    }
+
     void OnlineEvaluator::evaluateGatesAtDepth(size_t depth) {
         if (id_ == 0) { return; }
 
@@ -2711,6 +3103,7 @@ namespace graphdb
         std::vector<common::utils::SIMDOGate> compact_gates;
         std::vector<common::utils::SIMDOGate> gi_gates;
         std::vector<common::utils::SIMDOGate> gp_gates;
+        std::vector<common::utils::SIMDOGate> sort_gates;
 
         // First pass: collect the multi-round gates so their batched handlers can run once.
         for (auto &gate : circ_.gates_by_level[depth]) {
@@ -2761,6 +3154,12 @@ namespace graphdb
                     // gp_gates.push_back(*g);
                     break;
                 }
+                case common::utils::GateType::kSort: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    // Sort gates are processed immediately
+                    sort_gates.push_back(*g);
+                    break;
+                }
                 default:
                     break;
             }
@@ -2774,6 +3173,7 @@ namespace graphdb
         if (!compact_gates.empty()) { compactEvaluateParallel(compact_gates); }
         if (!gi_gates.empty()) { groupwiseIndexEvaluateParallel(gi_gates); }
         // if (!gp_gates.empty()) { groupwisePropagateEvaluateParallel(gp_gates); }
+        if (!sort_gates.empty()) { sortEvaluate(sort_gates); }
         
         // Second pass: handle locally evaluable gates.
         for (auto &gate : circ_.gates_by_level[depth]) {

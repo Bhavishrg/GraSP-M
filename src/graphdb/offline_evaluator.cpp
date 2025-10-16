@@ -756,6 +756,158 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+        case common::utils::GateType::kSort: {
+          // Sort gate preprocessing: 32 compaction operations + final shuffle
+          auto *sort_g = static_cast<common::utils::SIMDOGate *>(gate.get());
+          // Input is bit-decomposed: [bit0_elem0, bit1_elem0, ..., bit31_elem0, bit0_elem1, ...]
+          // Total size = 32 * vec_size
+          auto total_size = sort_g->in.size();
+          auto vec_size = total_size / 32;
+          
+          if (vec_size == 0 || total_size % 32 != 0) {
+            throw std::runtime_error("Sort gate input size must be divisible by 32");
+          }
+          
+          auto preproc_sort = std::make_unique<PreprocSortGate<Ring>>();
+          
+          // Initialize 2D vectors for 32 compaction operations
+          preproc_sort->shuffle_a.resize(32);
+          preproc_sort->shuffle_tp_a.resize(32);
+          preproc_sort->shuffle_b.resize(32);
+          preproc_sort->shuffle_tp_b.resize(32);
+          preproc_sort->shuffle_c.resize(32);
+          preproc_sort->shuffle_tp_c.resize(32);
+          preproc_sort->shuffle_delta.resize(32);
+          preproc_sort->shuffle_pi.resize(32);
+          preproc_sort->shuffle_tp_pi_all.resize(32);
+          
+          preproc_sort->mult_triple_a.resize(32);
+          preproc_sort->mult_tp_triple_a.resize(32);
+          preproc_sort->mult_triple_b.resize(32);
+          preproc_sort->mult_tp_triple_b.resize(32);
+          preproc_sort->mult_triple_c.resize(32);
+          preproc_sort->mult_tp_triple_c.resize(32);
+          
+          // Generate preprocessing for each of the 32 bit positions (MSB to LSB)
+          for (int bit = 0; bit < 32; ++bit) {
+            // Shuffle preprocessing for this bit's compaction
+            preproc_sort->shuffle_a[bit].resize(vec_size);
+            preproc_sort->shuffle_tp_a[bit].resize(vec_size);
+            preproc_sort->shuffle_b[bit].resize(vec_size);
+            preproc_sort->shuffle_tp_b[bit].resize(vec_size);
+            preproc_sort->shuffle_c[bit].resize(vec_size);
+            preproc_sort->shuffle_tp_c[bit].resize(vec_size);
+            
+            for (int i = 0; i < vec_size; i++) {
+              randomShare(nP_, id_, rgen_, preproc_sort->shuffle_a[bit][i], 
+                         preproc_sort->shuffle_tp_a[bit][i]);
+              randomShare(nP_, id_, rgen_, preproc_sort->shuffle_b[bit][i], 
+                         preproc_sort->shuffle_tp_b[bit][i]);
+              randomShare(nP_, id_, rgen_, preproc_sort->shuffle_c[bit][i], 
+                         preproc_sort->shuffle_tp_c[bit][i]);
+            }
+            
+            // Generate random permutation for this bit's compaction
+            if (id_ != 0) {
+              preproc_sort->shuffle_pi[bit].resize(vec_size);
+              for (int i = 0; i < vec_size; i++) {
+                preproc_sort->shuffle_pi[bit][i] = i;
+              }
+              // Identity permutation
+              for (size_t i = 0; i < vec_size; ++i) {
+                preproc_sort->shuffle_pi[bit][i] = i;
+              }
+            } else {
+              preproc_sort->shuffle_tp_pi_all[bit].resize(nP_);
+              for (int p = 0; p < nP_; ++p) {
+                preproc_sort->shuffle_tp_pi_all[bit][p].resize(vec_size);
+                for (int i = 0; i < vec_size; i++) {
+                  preproc_sort->shuffle_tp_pi_all[bit][p][i] = i;
+                }
+              }
+            }
+            
+            preproc_sort->shuffle_delta[bit].resize(vec_size);
+            generateShuffleDeltaVector(nP_, id_, rgen_, preproc_sort->shuffle_delta[bit], 
+                                      preproc_sort->shuffle_tp_a[bit], 
+                                      preproc_sort->shuffle_tp_b[bit], 
+                                      preproc_sort->shuffle_tp_c[bit],
+                                      preproc_sort->shuffle_tp_pi_all[bit], vec_size, 
+                                      rand_sh_sec, idx_rand_sh_sec);
+            
+            // Multiplication triples for label computation in this compaction
+            preproc_sort->mult_triple_a[bit].resize(vec_size);
+            preproc_sort->mult_tp_triple_a[bit].resize(vec_size);
+            preproc_sort->mult_triple_b[bit].resize(vec_size);
+            preproc_sort->mult_tp_triple_b[bit].resize(vec_size);
+            preproc_sort->mult_triple_c[bit].resize(vec_size);
+            preproc_sort->mult_tp_triple_c[bit].resize(vec_size);
+            
+            for (int i = 0; i < vec_size; i++) {
+              randomShare(nP_, id_, rgen_, preproc_sort->mult_triple_a[bit][i], 
+                         preproc_sort->mult_tp_triple_a[bit][i]);
+              randomShare(nP_, id_, rgen_, preproc_sort->mult_triple_b[bit][i], 
+                         preproc_sort->mult_tp_triple_b[bit][i]);
+              Ring tp_prod;
+              if (id_ == 0) { 
+                tp_prod = preproc_sort->mult_tp_triple_a[bit][i].secret() * 
+                         preproc_sort->mult_tp_triple_b[bit][i].secret(); 
+              }
+              randomShareSecret(nP_, id_, rgen_, preproc_sort->mult_triple_c[bit][i], 
+                               preproc_sort->mult_tp_triple_c[bit][i], tp_prod, 
+                               rand_sh_sec, idx_rand_sh_sec);
+            }
+          }
+          
+          // Final shuffle preprocessing for hiding the sorting permutation before reconstruction
+          preproc_sort->final_shuffle_a.resize(vec_size);
+          preproc_sort->final_shuffle_tp_a.resize(vec_size);
+          preproc_sort->final_shuffle_b.resize(vec_size);
+          preproc_sort->final_shuffle_tp_b.resize(vec_size);
+          preproc_sort->final_shuffle_c.resize(vec_size);
+          preproc_sort->final_shuffle_tp_c.resize(vec_size);
+          
+          for (int i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, preproc_sort->final_shuffle_a[i], 
+                       preproc_sort->final_shuffle_tp_a[i]);
+            randomShare(nP_, id_, rgen_, preproc_sort->final_shuffle_b[i], 
+                       preproc_sort->final_shuffle_tp_b[i]);
+            randomShare(nP_, id_, rgen_, preproc_sort->final_shuffle_c[i], 
+                       preproc_sort->final_shuffle_tp_c[i]);
+          }
+          
+          // Generate random permutation for final shuffle
+          if (id_ != 0) {
+            preproc_sort->final_shuffle_pi.resize(vec_size);
+            for (int i = 0; i < vec_size; i++) {
+              preproc_sort->final_shuffle_pi[i] = i;
+            }
+            // Identity permutation
+            for (size_t i = 0; i < vec_size; ++i) {
+              preproc_sort->final_shuffle_pi[i] = i;
+            }
+          } else {
+            preproc_sort->final_shuffle_tp_pi_all.resize(nP_);
+            for (int p = 0; p < nP_; ++p) {
+              preproc_sort->final_shuffle_tp_pi_all[p].resize(vec_size);
+              for (int i = 0; i < vec_size; i++) {
+                preproc_sort->final_shuffle_tp_pi_all[p][i] = i;
+              }
+            }
+          }
+          
+          preproc_sort->final_shuffle_delta.resize(vec_size);
+          generateShuffleDeltaVector(nP_, id_, rgen_, preproc_sort->final_shuffle_delta, 
+                                    preproc_sort->final_shuffle_tp_a, 
+                                    preproc_sort->final_shuffle_tp_b, 
+                                    preproc_sort->final_shuffle_tp_c,
+                                    preproc_sort->final_shuffle_tp_pi_all, vec_size, 
+                                    rand_sh_sec, idx_rand_sh_sec);
+          
+          preproc_.gates[gate->out] = std::move(preproc_sort);
+          break;
+        }
+
         default: {
           break;
         }

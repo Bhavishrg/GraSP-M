@@ -20,6 +20,7 @@ add_benchmark(grouppropagate)
 add_benchmark(grouppropagate_parallel)
 add_benchmark(reconstruction)
 add_benchmark(vector_reconstruction)
+add_benchmark(sort)
 
 add_custom_target(benchmarks)
 add_dependencies(benchmarks ${benchbin})
