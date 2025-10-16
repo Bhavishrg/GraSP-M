@@ -32,10 +32,9 @@ struct PreprocInput : public PreprocGate<R> {
 template <class R>
 struct PreprocRecGate : public PreprocGate<R> {
   bool Pking = false;
-  bool viaPking = true;  // Default: reconstruction via king party
   PreprocRecGate() = default;
-  PreprocRecGate(bool Pking, bool viaPking = true)
-    : PreprocGate<R>(), Pking(Pking), viaPking(viaPking) {}
+  PreprocRecGate(bool Pking)
+    : PreprocGate<R>(), Pking(Pking) {}
 };
 
 template <class R>
@@ -47,15 +46,13 @@ struct PreprocMultGate : public PreprocGate<R> {
   TPShare<R> tp_triple_b; // Holds all the beaver triple shares of a random value b
   AddShare<R> triple_c; // Holds one beaver triple share of c=a*b
   TPShare<R> tp_triple_c; // Holds all the beaver triple shares of c=a*b
-  bool viaPking = true;  // Default: reconstruction via king party
   PreprocMultGate() = default;
   PreprocMultGate(const AddShare<R>& triple_a, const TPShare<R>& tp_triple_a,
                   const AddShare<R>& triple_b, const TPShare<R>& tp_triple_b,
-                  const AddShare<R>& triple_c, const TPShare<R>& tp_triple_c,
-                  bool viaPking = true)
+                  const AddShare<R>& triple_c, const TPShare<R>& tp_triple_c)
       : PreprocGate<R>(), triple_a(triple_a), tp_triple_a(tp_triple_a),
         triple_b(triple_b), tp_triple_b(tp_triple_b),
-        triple_c(triple_c), tp_triple_c(tp_triple_c), viaPking(viaPking) {}
+        triple_c(triple_c), tp_triple_c(tp_triple_c) {}
 };
 
 template <class R>
@@ -136,8 +133,6 @@ struct PreprocCompactGate : public PreprocGate<R> {
   std::vector<AddShare<R>> mult_triple_c;
   std::vector<TPShare<R>> mult_tp_triple_c;
   
-  bool viaPking = true;  // Default: reconstruction via king party
-  
   PreprocCompactGate() = default;
   PreprocCompactGate(const std::vector<AddShare<R>>& shuffle_a, const std::vector<TPShare<R>>& shuffle_tp_a,
                      const std::vector<AddShare<R>>& shuffle_b, const std::vector<TPShare<R>>& shuffle_tp_b,
@@ -146,13 +141,12 @@ struct PreprocCompactGate : public PreprocGate<R> {
                      const std::vector<std::vector<int>>& shuffle_tp_pi_all,
                      const std::vector<AddShare<R>>& mult_triple_a, const std::vector<TPShare<R>>& mult_tp_triple_a,
                      const std::vector<AddShare<R>>& mult_triple_b, const std::vector<TPShare<R>>& mult_tp_triple_b,
-                     const std::vector<AddShare<R>>& mult_triple_c, const std::vector<TPShare<R>>& mult_tp_triple_c,
-                     bool viaPking = true)
+                     const std::vector<AddShare<R>>& mult_triple_c, const std::vector<TPShare<R>>& mult_tp_triple_c)
       : PreprocGate<R>(), shuffle_a(shuffle_a), shuffle_tp_a(shuffle_tp_a), shuffle_b(shuffle_b), shuffle_tp_b(shuffle_tp_b),
         shuffle_c(shuffle_c), shuffle_tp_c(shuffle_tp_c), shuffle_delta(shuffle_delta), shuffle_pi(shuffle_pi),
         shuffle_tp_pi_all(shuffle_tp_pi_all), mult_triple_a(mult_triple_a), mult_tp_triple_a(mult_tp_triple_a),
         mult_triple_b(mult_triple_b), mult_tp_triple_b(mult_tp_triple_b), mult_triple_c(mult_triple_c),
-        mult_tp_triple_c(mult_tp_triple_c), viaPking(viaPking) {}
+        mult_tp_triple_c(mult_tp_triple_c) {}
 };
 
 // Preprocessing for Group-wise Index gate
@@ -194,8 +188,6 @@ struct PreprocGroupwiseIndexGate : public PreprocGate<R> {
   std::vector<TPShare<R>> keymult_tp_triple_b;
   std::vector<AddShare<R>> keymult_triple_c;
   std::vector<TPShare<R>> keymult_tp_triple_c;
-  
-  bool viaPking = true;
   
   PreprocGroupwiseIndexGate() = default;
 };
@@ -256,8 +248,6 @@ struct PreprocGroupwisePropagateGate : public PreprocGate<R> {
   std::vector<Ring> revcompact_shuffle_delta;
   std::vector<int> revcompact_shuffle_pi;
   std::vector<std::vector<int>> revcompact_shuffle_tp_pi_all;
-  
-  bool viaPking = true;
   
   PreprocGroupwisePropagateGate() = default;
 };

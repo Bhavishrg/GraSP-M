@@ -122,21 +122,12 @@ void benchmark(const bpo::variables_map& opts) {
     OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed, latency_us);
     auto preproc = off_eval.run(input_pid_map);
     
-    // Set the viaPking flag in preprocessing data based on user option
-    for (auto& [wire, gate_preproc] : preproc.gates) {
-        auto* rec_gate = dynamic_cast<PreprocRecGate<Ring>*>(gate_preproc.get());
-        if (rec_gate != nullptr) {
-            rec_gate->viaPking = use_pking;
-        }
-    }
-    
     std::cout << "Preprocessing complete" << std::endl;
     network->sync();
     StatsPoint preproc_end(*network);
 
-    std::cout << "Starting online evaluation" << std::endl;
-    StatsPoint online_start(*network);
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
+    std::cout << "Setting inputs" << std::endl;
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     
     // Each party sets their own inputs
     std::unordered_map<common::utils::wire_t, Ring> inputs;
@@ -148,10 +139,15 @@ void benchmark(const bpo::variables_map& opts) {
     }
     eval.setInputs(inputs);
     
+    std::cout << "Starting online evaluation" << std::endl;
+    StatsPoint online_start(*network);
     // Evaluate circuit
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
     }
+    network->sync();
+    StatsPoint online_end(*network);
+    std::cout << "Online evaluation complete" << std::endl;
     
     // Get outputs
     // auto outputs = eval.getOutputs();
@@ -159,9 +155,6 @@ void benchmark(const bpo::variables_map& opts) {
     // for (size_t i = 0; i < outputs.size(); ++i) {
     //     std::cout << "  Output[" << i << "]: " << outputs[i] << std::endl;
     // }
-    
-    network->sync();
-    StatsPoint online_end(*network);
 
     StatsPoint end(*network);
 

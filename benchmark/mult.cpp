@@ -44,7 +44,6 @@ void benchmark(const bpo::variables_map& opts) {
     }
 
     auto nP = opts["num-parties"].as<int>();
-    auto iter = opts["iter"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
     auto threads = opts["threads"].as<size_t>();
@@ -83,7 +82,6 @@ void benchmark(const bpo::variables_map& opts) {
 
     json output_data;
     output_data["details"] = {{"num_parties", nP},
-                              {"iterations", iter},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
@@ -127,9 +125,8 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     StatsPoint preproc_end(*network);
 
-    std::cout << "Starting online evaluation" << std::endl;
-    StatsPoint online_start(*network);
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
+    std::cout << "Setting inputs" << std::endl;
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     
     // Set specific test inputs
     std::unordered_map<common::utils::wire_t, Ring> inputs;
@@ -168,6 +165,8 @@ void benchmark(const bpo::variables_map& opts) {
     
     eval.setInputs(inputs);
     
+    std::cout << "Starting online evaluation" << std::endl;
+    StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
     }
@@ -188,9 +187,9 @@ void benchmark(const bpo::variables_map& opts) {
     }
     std::cout << "============================\n" << std::endl;
     
-    std::cout << "Online evaluation complete" << std::endl;
     network->sync();
     StatsPoint online_end(*network);
+    std::cout << "Online evaluation complete" << std::endl;
 
     StatsPoint end(*network);
 
@@ -244,7 +243,6 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("iter,i", bpo::value<int>()->default_value(1), "Number of iterations for message passing.")
         ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")

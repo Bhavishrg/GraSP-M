@@ -127,9 +127,8 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     StatsPoint preproc_end(*network);
 
-    std::cout << "Starting online evaluation" << std::endl;
-    StatsPoint online_start(*network);
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
+    std::cout << "Setting inputs" << std::endl;
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     
     // Set specific test inputs
     std::unordered_map<common::utils::wire_t, Ring> inputs;
@@ -168,6 +167,8 @@ void benchmark(const bpo::variables_map& opts) {
     
     eval.setInputs(inputs);
     
+    std::cout << "Starting online evaluation" << std::endl;
+    StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
     }
@@ -188,9 +189,9 @@ void benchmark(const bpo::variables_map& opts) {
     }
     std::cout << "============================\n" << std::endl;
     
-    std::cout << "Online evaluation complete" << std::endl;
     network->sync();
     StatsPoint online_end(*network);
+    std::cout << "Online evaluation complete" << std::endl;
 
     StatsPoint end(*network);
 

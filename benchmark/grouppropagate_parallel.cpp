@@ -17,64 +17,84 @@ using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
 common::utils::Circuit<Ring> generateGroupwisePropagateCircuit(int nP, int pid, 
-                                                                size_t t1_vec_size, 
-                                                                size_t t2_vec_size) {
+                                                                size_t t1a_vec_size, 
+                                                                size_t t2a_vec_size,
+                                                                size_t t1b_vec_size,
+                                                                size_t t2b_vec_size) {
 
-    std::cout << "Generating Group-wise Propagate circuit for T1_size=" << t1_vec_size 
-              << ", T2_size=" << t2_vec_size << std::endl;
+    std::cout << "Generating Group-wise Propagate circuit for Gate1(T1_size=" << t1a_vec_size 
+              << ", T2_size=" << t2a_vec_size << "), Gate2(T1_size=" << t1b_vec_size 
+              << ", T2_size=" << t2b_vec_size << ")" << std::endl;
     
     common::utils::Circuit<Ring> circ;
 
-    // Input T1: key1 vector (binary) and v1 vector (data values)
-    std::vector<common::utils::wire_t> key1_vector(t1_vec_size);
-    std::vector<common::utils::wire_t> v1_vector(t1_vec_size);
-    
-    std::generate(key1_vector.begin(), key1_vector.end(), [&]() { return circ.newInputWire(); });
+    // Input for Gate 1: key1 vector (binary) and v1 vector (data values)
+    std::vector<common::utils::wire_t> key11_vector(t1a_vec_size);
+    std::vector<common::utils::wire_t> v1_vector(t1a_vec_size);
+    std::vector<common::utils::wire_t> key12_vector(t2a_vec_size);
+
+    // Input for Gate 2: key1 vector (binary) and v2 vector (data values)
+    std::vector<common::utils::wire_t> key21_vector(t1b_vec_size);
+    std::vector<common::utils::wire_t> v2_vector(t1b_vec_size);
+    std::vector<common::utils::wire_t> key22_vector(t2b_vec_size);
+
+
+    std::generate(key11_vector.begin(), key11_vector.end(), [&]() { return circ.newInputWire(); });
     std::generate(v1_vector.begin(), v1_vector.end(), [&]() { return circ.newInputWire(); });
+    std::generate(key12_vector.begin(), key12_vector.end(), [&]() { return circ.newInputWire(); });
 
-    // Input T2: key2 vector (binary, group markers)
-    std::vector<common::utils::wire_t> key2_vector(t2_vec_size);
-    std::generate(key2_vector.begin(), key2_vector.end(), [&]() { return circ.newInputWire(); });
+    std::generate(key21_vector.begin(), key21_vector.end(), [&]() { return circ.newInputWire(); });
+    std::generate(v2_vector.begin(), v2_vector.end(), [&]() { return circ.newInputWire(); });
+    std::generate(key22_vector.begin(), key22_vector.end(), [&]() { return circ.newInputWire(); });
 
-    // Prepare permutations (two separate permutations: one for T1, one for T2)
-    std::vector<std::vector<int>> permutation;
-    
-    // T1 permutation
-    std::vector<int> t1_perm(t1_vec_size);
-    for (size_t i = 0; i < t1_vec_size; ++i) {
-        t1_perm[i] = i;
+    // Prepare permutations for Gate 1
+    std::vector<std::vector<int>> permutation1;
+    std::vector<int> t1a_perm(t1a_vec_size);
+    for (size_t i = 0; i < t1a_vec_size; ++i) {
+        t1a_perm[i] = i;
     }
-    
-    // T2 permutation
-    std::vector<int> t2_perm(t2_vec_size);
-    for (size_t i = 0; i < t2_vec_size; ++i) {
-        t2_perm[i] = i;
+    std::vector<int> t2a_perm(t2a_vec_size);
+    for (size_t i = 0; i < t2a_vec_size; ++i) {
+        t2a_perm[i] = i;
     }
+    permutation1.push_back(t1a_perm);
+    permutation1.push_back(t2a_perm);
     
-    // For party 0, we need all parties' permutations
-    // For other parties, just their own permutation
-    if (pid == 0) {
-        // Party 0 stores all parties' permutations
-        // For simplicity, using same permutation for all parties
-        permutation.push_back(t1_perm);  // T1 permutation
-        permutation.push_back(t2_perm);  // T2 permutation
-    } else {
-        // Other parties store their own permutations
-        permutation.push_back(t1_perm);  // T1 permutation
-        permutation.push_back(t2_perm);  // T2 permutation
+    // Prepare permutations for Gate 2
+    std::vector<std::vector<int>> permutation2;
+    std::vector<int> t1b_perm(t1b_vec_size);
+    for (size_t i = 0; i < t1b_vec_size; ++i) {
+        t1b_perm[i] = i;
     }
+    std::vector<int> t2b_perm(t2b_vec_size);
+    for (size_t i = 0; i < t2b_vec_size; ++i) {
+        t2b_perm[i] = i;
+    }
+    permutation2.push_back(t1b_perm);
+    permutation2.push_back(t2b_perm);
 
     // Use the dedicated Group-wise Propagate gate
-    auto [output_key2, output_v] = circ.addGroupwisePropagateGate(key1_vector, v1_vector, 
-                                                                    key2_vector, permutation);
+    auto [output_key21, output_v1] = circ.addGroupwisePropagateGate(key11_vector, v1_vector, 
+                                                                    key12_vector, permutation1);
+
+    auto [output_key22, output_v2] = circ.addGroupwisePropagateGate(key21_vector, v2_vector, 
+                                                                    key22_vector, permutation2);
 
     // Set outputs: key2 (restored) and v (propagated values)
-    for (size_t i = 0; i < t2_vec_size; ++i) {
-        circ.setAsOutput(output_key2[i]);  // T_O[i].key
+    for (size_t i = 0; i < t2a_vec_size; ++i) {
+        circ.setAsOutput(output_key21[i]);  // T_O[i].key
     }
 
-    for (size_t i = 0; i < t2_vec_size; ++i) {
-        circ.setAsOutput(output_v[i]);     // T_O[i].v
+    for (size_t i = 0; i < t2a_vec_size; ++i) {
+        circ.setAsOutput(output_v1[i]);     // T_O[i].v
+    }
+
+    for (size_t i = 0; i < t2b_vec_size; ++i) {
+        circ.setAsOutput(output_key22[i]);  // T_O[i].key
+    }
+
+    for (size_t i = 0; i < t2b_vec_size; ++i) {
+        circ.setAsOutput(output_v2[i]);     // T_O[i].v
     }
 
     return circ;
@@ -89,8 +109,10 @@ void benchmark(const bpo::variables_map& opts) {
         save_file = opts["output"].as<std::string>();
     }
 
-    auto t1_size = opts["t1-size"].as<size_t>();
-    auto t2_size = opts["t2-size"].as<size_t>();
+    auto t1a_size = opts["t1a-size"].as<size_t>();
+    auto t2a_size = opts["t2a-size"].as<size_t>();
+    auto t1b_size = opts["t1b-size"].as<size_t>();
+    auto t2b_size = opts["t2b-size"].as<size_t>();
     auto nP = opts["num-parties"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
@@ -98,6 +120,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto seed = opts["seed"].as<size_t>();
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
+    auto use_pking = opts["use-pking"].as<bool>();
 
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
@@ -128,13 +151,16 @@ void benchmark(const bpo::variables_map& opts) {
 
     json output_data;
     output_data["details"] = {{"num_parties", nP},
-                              {"t1_size", t1_size},
-                              {"t2_size", t2_size},
+                              {"t1a_size", t1a_size},
+                              {"t2a_size", t2a_size},
+                              {"t1b_size", t1b_size},
+                              {"t2b_size", t2b_size},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
                               {"seed", seed},
-                              {"repeat", repeat}};
+                              {"repeat", repeat},
+                              {"use_pking", use_pking}};
     output_data["benchmarks"] = json::array();
 
     std::cout << "--- Details ---" << std::endl;
@@ -146,7 +172,7 @@ void benchmark(const bpo::variables_map& opts) {
     StatsPoint start(*network);
     network->sync();
 
-    auto circ = generateGroupwisePropagateCircuit(nP, pid, t1_size, t2_size).orderGatesByLevel();
+    auto circ = generateGroupwisePropagateCircuit(nP, pid, t1a_size, t2a_size, t1b_size, t2b_size).orderGatesByLevel();
     network->sync();
 
     std::cout << "--- Circuit ---" << std::endl;
@@ -170,7 +196,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     std::cout << "Starting online evaluation" << std::endl;
     StatsPoint online_start(*network);
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     
     // Set inputs
     std::unordered_map<common::utils::wire_t, Ring> inputs;
@@ -188,61 +214,117 @@ void benchmark(const bpo::variables_map& opts) {
     
     std::cout << "Setting inputs for party " << pid << std::endl;
     
-    // Structure: first t1_size wires = key1, next t1_size wires = v1, next t2_size wires = key2
-    std::vector<Ring> key1_input_values(t1_size);
-    std::vector<Ring> v1_input_values(t1_size);
-    std::vector<Ring> key2_input_values(t2_size);
+    // Structure: We have 2 gates with different sizes
+    // Gate 1: key11 (t1a_size) + v1 (t1a_size) + key12 (t2a_size)
+    // Gate 2: key21 (t1b_size) + v2 (t1b_size) + key22 (t2b_size)
+    std::vector<Ring> key1a_input_values(t1a_size);
+    std::vector<Ring> v1_input_values(t1a_size);
+    std::vector<Ring> key2a_input_values(t2a_size);
+    std::vector<Ring> key1b_input_values(t1b_size);
+    std::vector<Ring> v2_input_values(t1b_size);
+    std::vector<Ring> key2b_input_values(t2b_size);
+
+    size_t gate1_inputs = 2 * t1a_size + t2a_size;
+    size_t gate2_inputs = 2 * t1b_size + t2b_size;
     
     for (size_t i = 0; i < input_wires.size(); ++i) {
         auto wire = input_wires[i];
-        if (i < t1_size) {
-            // key1 vector: binary values (0 or 1), indicating data entries
-            // For demonstration, let's have a few marked entries (key=1)
-            Ring val = 0;
-            if (i == 0 || i == 2 || i == 5) {  // Mark specific entries
-                val = 1;
+        
+        if (i < gate1_inputs) {
+            // Gate 1 inputs
+            if (i < t1a_size) {
+                // key1a vector
+                Ring val = 0;
+                if (i == 0 || i == 2 || (i == 5 && i < t1a_size)) {
+                    val = 1;
+                }
+                inputs[wire] = val;
+                key1a_input_values[i] = val;
+            } else if (i < 2 * t1a_size) {
+                // v1 vector
+                size_t v_idx = i - t1a_size;
+                Ring val = static_cast<Ring>(100 + v_idx * 10);
+                inputs[wire] = val;
+                v1_input_values[v_idx] = val;
+            } else {
+                // key2a vector
+                size_t key2_idx = i - 2 * t1a_size;
+                Ring val = 0;
+                if (key2_idx == 0 || key2_idx % 3 == 0) {
+                    val = 1;
+                }
+                inputs[wire] = val;
+                key2a_input_values[key2_idx] = val;
             }
-            inputs[wire] = val;
-            key1_input_values[i] = val;
-        } else if (i < 2 * t1_size) {
-            // v1 vector: data values to propagate
-            Ring val = static_cast<Ring>(100 + (i - t1_size) * 10);  // Values: 100, 110, 120, ...
-            inputs[wire] = val;
-            v1_input_values[i - t1_size] = val;
         } else {
-            // key2 vector: binary values (0 or 1), group markers
-            size_t idx = i - 2 * t1_size;
-            Ring val = 0;
-            if (idx == 0 || idx % 3 == 0) {  // Start new group every 3 elements
-                val = 1;
+            // Gate 2 inputs
+            size_t gate2_offset = i - gate1_inputs;
+            if (gate2_offset < t1b_size) {
+                // key1b vector
+                Ring val = 0;
+                if (gate2_offset == 0 || gate2_offset == 2 || (gate2_offset == 5 && gate2_offset < t1b_size)) {
+                    val = 1;
+                }
+                inputs[wire] = val;
+                key1b_input_values[gate2_offset] = val;
+            } else if (gate2_offset < 2 * t1b_size) {
+                // v2 vector
+                size_t v_idx = gate2_offset - t1b_size;
+                Ring val = static_cast<Ring>(100 + v_idx * 10);
+                inputs[wire] = val;
+                v2_input_values[v_idx] = val;
+            } else {
+                // key2b vector
+                size_t key2_idx = gate2_offset - 2 * t1b_size;
+                Ring val = 0;
+                if (key2_idx == 0 || key2_idx % 3 == 0) {
+                    val = 1;
+                }
+                inputs[wire] = val;
+                key2b_input_values[key2_idx] = val;
             }
-            inputs[wire] = val;
-            key2_input_values[idx] = val;
         }
     }
 
     // Print inputs in structured format
     std::cout << "\n=== INPUT VECTORS (Party " << pid << ") ===" << std::endl;
-    std::cout << "T1 - Key1 vector (1=marked entry): ";
-    for (size_t i = 0; i < t1_size; ++i) {
-        std::cout << key1_input_values[i] << " ";
+    std::cout << "Gate 1:" << std::endl;
+    std::cout << "  T1a - Key1 vector (1=marked entry): ";
+    for (size_t i = 0; i < t1a_size; ++i) {
+        std::cout << key1a_input_values[i] << " ";
     }
     std::cout << std::endl;
-    
-    std::cout << "T1 - Value vector (to propagate):  ";
-    for (size_t i = 0; i < t1_size; ++i) {
+    std::cout << "  T1a - Value vector (to propagate):  ";
+    for (size_t i = 0; i < t1a_size; ++i) {
         std::cout << v1_input_values[i] << " ";
     }
     std::cout << std::endl;
+    std::cout << "  T2a - Key2 vector (1=group start):  ";
+    for (size_t i = 0; i < t2a_size; ++i) {
+        std::cout << key2a_input_values[i] << " ";
+    }
+    std::cout << std::endl;
     
-    std::cout << "T2 - Key2 vector (1=group start):  ";
-    for (size_t i = 0; i < t2_size; ++i) {
-        std::cout << key2_input_values[i] << " ";
+    std::cout << "Gate 2:" << std::endl;
+    std::cout << "  T1b - Key1 vector (1=marked entry): ";
+    for (size_t i = 0; i < t1b_size; ++i) {
+        std::cout << key1b_input_values[i] << " ";
+    }
+    std::cout << std::endl;
+    std::cout << "  T1b - Value vector (to propagate):  ";
+    for (size_t i = 0; i < t1b_size; ++i) {
+        std::cout << v2_input_values[i] << " ";
+    }
+    std::cout << std::endl;
+    std::cout << "  T2b - Key2 vector (1=group start):  ";
+    for (size_t i = 0; i < t2b_size; ++i) {
+        std::cout << key2b_input_values[i] << " ";
     }
     std::cout << std::endl;
     std::cout << "Total inputs set: " << inputs.size() << std::endl;
     
     eval.setInputs(inputs);
+    std::cout << "Total inputs setting done" << std::endl;
     
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
@@ -252,17 +334,28 @@ void benchmark(const bpo::variables_map& opts) {
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
     // Print outputs in structured format
-    // Output structure: t2_size for key2, t2_size for v (propagated)
     std::cout << "\n=== OUTPUT VECTORS (Party " << pid << ") ===" << std::endl;
-    std::cout << "Key2 (restored):             ";
-    for (size_t i = 0; i < t2_size; ++i) {
+    std::cout << "Gate 1:" << std::endl;
+    std::cout << "  Key2a (restored):             ";
+    for (size_t i = 0; i < t2a_size; ++i) {
         std::cout << outputs[i] << " ";
     }
     std::cout << std::endl;
-    
-    std::cout << "Value (propagated to groups): ";
-    for (size_t i = 0; i < t2_size; ++i) {
-        std::cout << outputs[t2_size + i] << " ";
+    std::cout << "  Value1 (propagated to groups): ";
+    for (size_t i = 0; i < t2a_size; ++i) {
+        std::cout << outputs[t2a_size + i] << " ";
+    }
+    std::cout << std::endl;
+
+    std::cout << "Gate 2:" << std::endl;
+    std::cout << "  Key2b (restored):             ";
+    for (size_t i = 0; i < t2b_size; ++i) {
+        std::cout << outputs[2*t2a_size + i] << " ";
+    }
+    std::cout << std::endl;
+    std::cout << "  Value2 (propagated to groups): ";
+    for (size_t i = 0; i < t2b_size; ++i) {
+        std::cout << outputs[2*t2a_size + t2b_size + i] << " ";
     }
     std::cout << std::endl << std::endl;
     
@@ -318,12 +411,15 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("t1-size", bpo::value<size_t>()->required(), "Size of T1 list (key-value pairs).")
-        ("t2-size", bpo::value<size_t>()->required(), "Size of T2 list (grouped list).")
+        ("t1a-size", bpo::value<size_t>()->required(), "Size of T1 list for Gate 1 (key-value pairs).")
+        ("t2a-size", bpo::value<size_t>()->required(), "Size of T2 list for Gate 1 (grouped list).")
+        ("t1b-size", bpo::value<size_t>()->required(), "Size of T1 list for Gate 2 (key-value pairs).")
+        ("t2b-size", bpo::value<size_t>()->required(), "Size of T2 list for Gate 2 (grouped list).")
         ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
         ("seed", bpo::value<size_t>()->default_value(200), "Value of the random seed.")
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).")
         ("net-config", bpo::value<std::string>(), "Path to JSON file containing network details of all parties.")
         ("localhost", bpo::bool_switch(), "All parties are on same machine.")
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")

@@ -44,7 +44,7 @@ void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AddShare<
 
 void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
                                          AddShare<Ring>& share, TPShare<Ring>& tpShare, Ring secret,
-                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec, bool print) {
+                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec) {
   if (pid == 0) {
     Ring val = Ring(0);
     Ring valn = Ring(0);
@@ -54,31 +54,18 @@ void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
       rgen.pi(i).random_data(&val, sizeof(Ring));
       tpShare.pushValues(val);
       valn += val;
-      if (print){
-        std::cout << "Eqz r2 share of p1: " << val << std::endl;
-      }
-      
     }
     valn = secret - valn;
     tpShare.pushValues(valn);
     rand_sh_sec.push_back(valn);
-    if (print){
-        std::cout << "Eqz r2 share of p2: " << valn << std::endl;
-    }
   } else {
     if (pid != nP) {
       Ring val;
       rgen.p0().random_data(&val, sizeof(Ring));
       share.pushValue(val);
-      if (print){
-        std::cout << "Eqz r2 share of p" << pid << ": " << val << std::endl;
-      }
     } else {
       share.pushValue(rand_sh_sec[idx_rand_sh_sec]);
       idx_rand_sh_sec++;
-      if (print){
-        std::cout << "Eqz r2 share of p" << pid << ": " << share.valueAt() << std::endl;
-      }
     }
   }
 }
@@ -217,9 +204,7 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           auto pregate = std::make_unique<PreprocRecGate<Ring>>();
           // King party (party 1) receives the reconstructed value
           bool is_king = (id_ == 1);
-          bool via_pking = true;  // Default: reconstruction via king party
           pregate->Pking = is_king;
-          pregate->viaPking = via_pking;
           preproc_.gates[gate->out] = std::move(pregate);
           break;
         }
@@ -237,7 +222,7 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           if (id_ == 0) { tp_prod = tp_triple_a.secret() * tp_triple_b.secret(); }
           randomShareSecret(nP_, id_, rgen_, triple_c, tp_triple_c, tp_prod, rand_sh_sec, idx_rand_sh_sec);
           preproc_.gates[gate->out] =
-              std::move(std::make_unique<PreprocMultGate<Ring>>(triple_a, tp_triple_a, triple_b, tp_triple_b, triple_c, tp_triple_c, use_pking_));
+              std::move(std::make_unique<PreprocMultGate<Ring>>(triple_a, tp_triple_a, triple_b, tp_triple_b, triple_c, tp_triple_c));
           break;
         }
 
@@ -272,7 +257,7 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
             rgen_.p0().random_data(&tp_r2, sizeof(Ring));
             tp_r2 = tp_r2 % RINGSIZEBITS; // make sure r2 is in [0, RINGSIZEBITS-1]
           }
-          randomShareSecret(nP_, id_, rgen_, share_r2, tp_share_r2, tp_r2, rand_sh_sec, idx_rand_sh_sec, 1);
+          randomShareSecret(nP_, id_, rgen_, share_r2, tp_share_r2, tp_r2, rand_sh_sec, idx_rand_sh_sec);
 
           if (id_ == 0) {
             tp_r2 = tp_share_r2.secret();
@@ -412,7 +397,7 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
               shuffle_a, shuffle_tp_a, shuffle_b, shuffle_tp_b, shuffle_c, shuffle_tp_c,
               shuffle_delta, shuffle_pi, shuffle_tp_pi_all,
               mult_triple_a, mult_tp_triple_a, mult_triple_b, mult_tp_triple_b,
-              mult_triple_c, mult_tp_triple_c, true));
+              mult_triple_c, mult_tp_triple_c));
           break;
         }
 
@@ -543,8 +528,6 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           preproc_gi->revcompact_shuffle_delta = std::move(revcompact_shuffle_delta);
           preproc_gi->revcompact_shuffle_pi = std::move(revcompact_shuffle_pi);
           preproc_gi->revcompact_shuffle_tp_pi_all = std::move(revcompact_shuffle_tp_pi_all);
-          
-          preproc_gi->viaPking = true;
           
           preproc_.gates[gate->out] = std::move(preproc_gi);
           break;
@@ -681,14 +664,14 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           }
           
           // Multiplication triples for difference * key (Step 3)
-          std::vector<AddShare<Ring>> diff_mult_triple_a(t2_vec_size);
-          std::vector<TPShare<Ring>> diff_mult_tp_triple_a(t2_vec_size);
-          std::vector<AddShare<Ring>> diff_mult_triple_b(t2_vec_size);
-          std::vector<TPShare<Ring>> diff_mult_tp_triple_b(t2_vec_size);
-          std::vector<AddShare<Ring>> diff_mult_triple_c(t2_vec_size);
-          std::vector<TPShare<Ring>> diff_mult_tp_triple_c(t2_vec_size);
+          std::vector<AddShare<Ring>> diff_mult_triple_a(t1_vec_size);
+          std::vector<TPShare<Ring>> diff_mult_tp_triple_a(t1_vec_size);
+          std::vector<AddShare<Ring>> diff_mult_triple_b(t1_vec_size);
+          std::vector<TPShare<Ring>> diff_mult_tp_triple_b(t1_vec_size);
+          std::vector<AddShare<Ring>> diff_mult_triple_c(t1_vec_size);
+          std::vector<TPShare<Ring>> diff_mult_tp_triple_c(t1_vec_size);
           
-          for (int i = 0; i < t2_vec_size; i++) {
+          for (int i = 0; i < t1_vec_size; i++) {
             randomShare(nP_, id_, rgen_, diff_mult_triple_a[i], diff_mult_tp_triple_a[i]);
             randomShare(nP_, id_, rgen_, diff_mult_triple_b[i], diff_mult_tp_triple_b[i]);
             Ring tp_prod;
@@ -768,8 +751,6 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           preproc_gp->revcompact_shuffle_delta = std::move(revcompact_shuffle_delta);
           preproc_gp->revcompact_shuffle_pi = std::move(revcompact_shuffle_pi);
           preproc_gp->revcompact_shuffle_tp_pi_all = std::move(revcompact_shuffle_tp_pi_all);
-          
-          preproc_gp->viaPking = true;
           
           preproc_.gates[gate->out] = std::move(preproc_gp);
           break;

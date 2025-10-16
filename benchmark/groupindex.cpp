@@ -95,6 +95,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto seed = opts["seed"].as<size_t>();
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
+    auto use_pking = opts["use-pking"].as<bool>();
 
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
@@ -130,7 +131,8 @@ void benchmark(const bpo::variables_map& opts) {
                               {"pid", pid},
                               {"threads", threads},
                               {"seed", seed},
-                              {"repeat", repeat}};
+                              {"repeat", repeat},
+                              {"use_pking", use_pking}};
     output_data["benchmarks"] = json::array();
 
     std::cout << "--- Details ---" << std::endl;
@@ -166,7 +168,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     std::cout << "Starting online evaluation" << std::endl;
     StatsPoint online_start(*network);
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     
     // Set inputs
     std::unordered_map<common::utils::wire_t, Ring> inputs;
@@ -309,6 +311,7 @@ bpo::options_description programOptions() {
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
         ("seed", bpo::value<size_t>()->default_value(200), "Value of the random seed.")
+        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).")
         ("net-config", bpo::value<std::string>(), "Path to JSON file containing network details of all parties.")
         ("localhost", bpo::bool_switch(), "All parties are on same machine.")
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")

@@ -18,6 +18,7 @@ namespace graphdb {
     int nP_;
     int id_;
     int latency_;  // Network latency in microseconds
+    bool use_pking_;  // Use king party for reconstruction
     RandGenPool rgen_;
     std::shared_ptr<io::NetIOMP> network_;
     PreprocCircuit<Ring> preproc_;
@@ -35,12 +36,12 @@ namespace graphdb {
     OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                     PreprocCircuit<Ring> preproc,
                     common::utils::LevelOrderedCircuit circ,
-                    int threads, int seed = 200, int latency = 100);
+                    int threads, int seed = 200, int latency = 100, bool use_pking = true);
 
     OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                     PreprocCircuit<Ring> preproc,
                     common::utils::LevelOrderedCircuit circ,
-                    std::shared_ptr<ThreadPool> tpool, int seed = 200, int latency = 100);
+                    std::shared_ptr<ThreadPool> tpool, int seed = 200, int latency = 100, bool use_pking = true);
 
     void setInputs(const std::unordered_map<common::utils::wire_t, Ring> &inputs);
 
@@ -66,9 +67,15 @@ namespace graphdb {
 
     void compactEvaluate(const common::utils::SIMDOGate &compact_gate);
 
+    void compactEvaluateParallel(const std::vector<common::utils::SIMDOGate> &compact_gates);
+
     void groupwiseIndexEvaluate(const common::utils::SIMDOGate &gi_gate);
 
-    void groupwisePropagateEvaluate(const common::utils::SIMDOGate &gp_gate);
+    void groupwiseIndexEvaluateParallel(const std::vector<common::utils::SIMDOGate> &gi_gates);
+
+    void groupwisePropagateEvaluate(const common::utils::SIMDOGate &gp_gate, int latency);
+
+    void groupwisePropagateEvaluateParallel(const std::vector<common::utils::SIMDOGate> &gp_gates);
 
     std::vector<Ring> getOutputs();
 

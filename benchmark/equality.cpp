@@ -51,6 +51,7 @@ void benchmark(const bpo::variables_map& opts) {
     auto seed = opts["seed"].as<size_t>();
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
+    auto use_pking = opts["use-pking"].as<bool>();
 
     omp_set_nested(1);
     // omp_set_num_threads(nP);
@@ -124,9 +125,8 @@ void benchmark(const bpo::variables_map& opts) {
     network->sync();
     StatsPoint preproc_end(*network);
 
-    std::cout << "Starting online evaluation" << std::endl;
-    StatsPoint online_start(*network);
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us);
+    std::cout << "Setting inputs" << std::endl;
+    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     std::unordered_map<common::utils::wire_t, Ring> inputs;
     for (const auto& [wire, owner] : input_pid_map) {
         if (owner == static_cast<int>(pid)) {
@@ -134,13 +134,18 @@ void benchmark(const bpo::variables_map& opts) {
         }
     }
     eval.setInputs(inputs);
+    
+    std::cout << "Starting online evaluation" << std::endl;
+    StatsPoint online_start(*network);
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
     }
-    Ring out = eval.getOutputs()[0];
-    std::cout << "Output is: " << out << std::endl;
     network->sync();
     StatsPoint online_end(*network);
+    std::cout << "Online evaluation complete" << std::endl;
+    
+    Ring out = eval.getOutputs()[0];
+    std::cout << "Output is: " << out << std::endl;
 
     StatsPoint end(*network);
 
