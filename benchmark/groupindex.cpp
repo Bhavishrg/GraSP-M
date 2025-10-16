@@ -124,6 +124,10 @@ void benchmark(const bpo::variables_map& opts) {
         network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
     }
 
+    // Increase socket buffer sizes to prevent deadlocks with large messages
+    increaseSocketBuffers(network.get(), 128 * 1024 * 1024);
+
+
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"vec_size", vec_size},
@@ -209,18 +213,20 @@ void benchmark(const bpo::variables_map& opts) {
         }
     }
 
-    // Print inputs in structured format
-    std::cout << "\n=== INPUT VECTORS (Party " << pid << ") ===" << std::endl;
+    // Print inputs in structured format (first 20 entries)
+    std::cout << "\n=== INPUT VECTORS (Party " << pid << ") - First 20 entries ===" << std::endl;
     std::cout << "Key vector (1=group start): ";
-    for (size_t i = 0; i < vec_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
         std::cout << key_input_values[i] << " ";
     }
+    if (vec_size > 20) std::cout << "...";
     std::cout << std::endl;
     
     std::cout << "Value vector:               ";
-    for (size_t i = 0; i < vec_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
         std::cout << v_input_values[i] << " ";
     }
+    if (vec_size > 20) std::cout << "...";
     std::cout << std::endl;
     std::cout << "Total inputs set: " << inputs.size() << std::endl;
     
@@ -233,25 +239,28 @@ void benchmark(const bpo::variables_map& opts) {
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-    // Print outputs in structured format
+    // Print outputs in structured format (first 20 entries)
     // Output structure: vec_size for ind, vec_size for key, vec_size for v
-    std::cout << "\n=== OUTPUT VECTORS (Party " << pid << ") ===" << std::endl;
+    std::cout << "\n=== OUTPUT VECTORS (Party " << pid << ") - First 20 entries ===" << std::endl;
     std::cout << "Group-wise index (T_O.ind): ";
-    for (size_t i = 0; i < vec_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
         std::cout << outputs[i] << " ";
     }
+    if (vec_size > 20) std::cout << "...";
     std::cout << std::endl;
     
     std::cout << "Key (restored):              ";
-    for (size_t i = 0; i < vec_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
         std::cout << outputs[vec_size + i] << " ";
     }
+    if (vec_size > 20) std::cout << "...";
     std::cout << std::endl;
     
     std::cout << "Value (restored):            ";
-    for (size_t i = 0; i < vec_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
         std::cout << outputs[2 * vec_size + i] << " ";
     }
+    if (vec_size > 20) std::cout << "...";
     std::cout << std::endl << std::endl;
     
     network->sync();

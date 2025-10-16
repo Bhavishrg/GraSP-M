@@ -97,6 +97,9 @@ void benchmark(const bpo::variables_map& opts) {
         network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
     }
 
+    // Increase socket buffer sizes to prevent deadlocks with large messages
+    increaseSocketBuffers(network.get(), 128 * 1024 * 1024);
+
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"vec_size", vec_size},
@@ -165,12 +168,14 @@ void benchmark(const bpo::variables_map& opts) {
     if (!input_wires.empty()) {
         std::cout << "\n=== SETTING TEST INPUTS ===" << std::endl;
         std::cout << "Party " << pid << " setting inputs:" << std::endl;
+        // #pragma omp parallel for
         for (size_t idx = 0; idx < input_wires.size(); ++idx) {
             auto wire = input_wires[idx];
             inputs[wire] = input_values[idx];
-            std::cout << "  Wire " << wire << " = " << input_values[idx] << std::endl;
+            // std::cout << "  Wire " << wire << " = " << input_values[idx] << std::endl;
         }
         std::cout << "Note: Shuffle uses random permutations generated during preprocessing" << std::endl;
+        std::cout << "  Set " << input_wires.size() << " input values" << std::endl;
         std::cout << "========================\n" << std::endl;
     }
 
@@ -196,16 +201,18 @@ void benchmark(const bpo::variables_map& opts) {
     
     bool is_valid_permutation = (sorted_inputs == sorted_outputs);
     
-    std::cout << "  Input:  [";
-    for (size_t i = 0; i < input_values.size(); ++i) {
-        std::cout << input_values[i] << (i + 1 == input_values.size() ? "" : ", ");
+    std::cout << "  Input (first 20):  [";
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), input_values.size()); ++i) {
+        std::cout << input_values[i] << (i + 1 == std::min(static_cast<size_t>(20), input_values.size()) ? "" : ", ");
     }
+    if (input_values.size() > 20) std::cout << ", ...";
     std::cout << "]" << std::endl;
     
-    std::cout << "  Output: [";
-    for (size_t i = 0; i < outputs.size(); ++i) {
-        std::cout << outputs[i] << (i + 1 == outputs.size() ? "" : ", ");
+    std::cout << "  Output (first 20): [";
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), outputs.size()); ++i) {
+        std::cout << outputs[i] << (i + 1 == std::min(static_cast<size_t>(20), outputs.size()) ? "" : ", ");
     }
+    if (outputs.size() > 20) std::cout << ", ...";
     std::cout << "]" << std::endl;
     
     if (is_valid_permutation) {

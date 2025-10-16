@@ -132,6 +132,10 @@ void benchmark(const bpo::variables_map& opts) {
         network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
     }
 
+    // Increase socket buffer sizes to prevent deadlocks with large messages
+    increaseSocketBuffers(network.get(), 128 * 1024 * 1024);
+
+
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"vec_size1", vec_size1},
@@ -211,42 +215,46 @@ void benchmark(const bpo::variables_map& opts) {
 
     std::cout << "Total inputs set: " << inputs.size() << std::endl;
     
-    // Print sample inputs for both gates
+    // Print sample inputs for both gates (first 20 entries)
     if (input_wires.size() > 0) {
-        std::cout << "\n=== GATE 1 Sample Inputs (first 5 elements) ===" << std::endl;
+        std::cout << "\n=== GATE 1 Sample Inputs (first 20 elements) ===" << std::endl;
         std::cout << "t_vector1: ";
-        for (size_t i = 0; i < std::min(std::min(size_t(5), vec_size1), input_wires.size()); ++i) {
+        for (size_t i = 0; i < std::min(std::min(size_t(20), vec_size1), input_wires.size()); ++i) {
             auto wire = input_wires[i];
             if (inputs.count(wire)) std::cout << inputs[wire] << " ";
         }
+        if (vec_size1 > 20) std::cout << "...";
         std::cout << std::endl;
         std::cout << "p_vectors1[0]: ";
-        for (size_t i = 0; i < std::min(size_t(5), vec_size1); ++i) {
+        for (size_t i = 0; i < std::min(size_t(20), vec_size1); ++i) {
             if (vec_size1 + i < input_wires.size()) {
                 auto wire = input_wires[vec_size1 + i];
                 if (inputs.count(wire)) std::cout << inputs[wire] << " ";
             }
         }
+        if (vec_size1 > 20) std::cout << "...";
         std::cout << std::endl;
         
         size_t gate2_start = vec_size1 * (1 + num_payloads);
         if (gate2_start < input_wires.size()) {
-            std::cout << "\n=== GATE 2 Sample Inputs (first 5 elements) ===" << std::endl;
+            std::cout << "\n=== GATE 2 Sample Inputs (first 20 elements) ===" << std::endl;
             std::cout << "t_vector2: ";
-            for (size_t i = 0; i < std::min(size_t(5), vec_size2); ++i) {
+            for (size_t i = 0; i < std::min(size_t(20), vec_size2); ++i) {
                 if (gate2_start + i < input_wires.size()) {
                     auto wire = input_wires[gate2_start + i];
                     if (inputs.count(wire)) std::cout << inputs[wire] << " ";
                 }
             }
+            if (vec_size2 > 20) std::cout << "...";
             std::cout << std::endl;
             std::cout << "p_vectors2[0]: ";
-            for (size_t i = 0; i < std::min(size_t(5), vec_size2); ++i) {
+            for (size_t i = 0; i < std::min(size_t(20), vec_size2); ++i) {
                 if (gate2_start + vec_size2 + i < input_wires.size()) {
                     auto wire = input_wires[gate2_start + vec_size2 + i];
                     if (inputs.count(wire)) std::cout << inputs[wire] << " ";
                 }
             }
+            if (vec_size2 > 20) std::cout << "...";
             std::cout << std::endl;
         }
         std::cout << std::endl;
@@ -266,35 +274,39 @@ void benchmark(const bpo::variables_map& opts) {
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-    // Print sample outputs for both gates
+    // Print sample outputs for both gates (first 20 entries)
     std::vector<Ring> output_values = outputs;
     
     size_t gate1_outputs = vec_size1 * (1 + num_payloads);
-    std::cout << "\n=== GATE 1 Sample Outputs (first 5 elements) ===" << std::endl;
+    std::cout << "\n=== GATE 1 Sample Outputs (first 20 elements) ===" << std::endl;
     std::cout << "t_compacted1: ";
-    for (size_t i = 0; i < std::min(size_t(5), vec_size1); ++i) {
+    for (size_t i = 0; i < std::min(size_t(20), vec_size1); ++i) {
         if (i < output_values.size()) std::cout << output_values[i] << " ";
     }
+    if (vec_size1 > 20) std::cout << "...";
     std::cout << std::endl;
     std::cout << "p_compacted1[0]: ";
-    for (size_t i = 0; i < std::min(size_t(5), vec_size1); ++i) {
+    for (size_t i = 0; i < std::min(size_t(20), vec_size1); ++i) {
         size_t idx = vec_size1 + i;
         if (idx < output_values.size()) std::cout << output_values[idx] << " ";
     }
+    if (vec_size1 > 20) std::cout << "...";
     std::cout << std::endl;
     
-    std::cout << "\n=== GATE 2 Sample Outputs (first 5 elements) ===" << std::endl;
+    std::cout << "\n=== GATE 2 Sample Outputs (first 20 elements) ===" << std::endl;
     std::cout << "t_compacted2: ";
-    for (size_t i = 0; i < std::min(size_t(5), vec_size2); ++i) {
+    for (size_t i = 0; i < std::min(size_t(20), vec_size2); ++i) {
         size_t idx = gate1_outputs + i;
         if (idx < output_values.size()) std::cout << output_values[idx] << " ";
     }
+    if (vec_size2 > 20) std::cout << "...";
     std::cout << std::endl;
     std::cout << "p_compacted2[0]: ";
-    for (size_t i = 0; i < std::min(size_t(5), vec_size2); ++i) {
+    for (size_t i = 0; i < std::min(size_t(20), vec_size2); ++i) {
         size_t idx = gate1_outputs + vec_size2 + i;
         if (idx < output_values.size()) std::cout << output_values[idx] << " ";
     }
+    if (vec_size2 > 20) std::cout << "...";
     std::cout << std::endl << std::endl;
 
     StatsPoint end(*network);

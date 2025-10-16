@@ -81,6 +81,9 @@ void benchmark(const bpo::variables_map& opts) {
         network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
     }
 
+    // Increase socket buffer sizes to prevent deadlocks with large messages
+    increaseSocketBuffers(network.get(), 128 * 1024 * 1024);
+
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"iterations", iter},

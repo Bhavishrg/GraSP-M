@@ -1,7 +1,4 @@
 #include <io/netmp.h>
-#include <graphdb/offline_evaluator.h>
-#include <graphdb/online_evaluator.h>
-#include <utils/circuit.h>
 
 #include <algorithm>
 #include <boost/program_options.hpp>
@@ -12,27 +9,9 @@
 
 #include "utils.h"
 
-using namespace graphdb;
+using namespace common::utils;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
-
-common::utils::Circuit<Ring> generateEqzCircuit(int nP, int pid) {
-
-    std::cout << "Generating circuit" << std::endl;
-    
-    common::utils::Circuit<Ring> circ;
-
-    std::vector<common::utils::wire_t> input_vector(1);
-    std::generate(input_vector.begin(), input_vector.end(), [&]() { return circ.newInputWire(); });
-
-
-    // shuffle
-    auto out = circ.addGate(common::utils::GateType::kEqz, input_vector[0]);
-
-    circ.setAsOutput(out);
-
-    return circ;
-}
 
 void benchmark(const bpo::variables_map& opts) {
 
@@ -43,7 +22,7 @@ void benchmark(const bpo::variables_map& opts) {
         save_file = opts["output"].as<std::string>();
     }
 
-    auto input = opts["input"].as<int>();
+    auto vec_size = opts["vec-size"].as<int>();
     auto nP = opts["num-parties"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
@@ -51,19 +30,16 @@ void benchmark(const bpo::variables_map& opts) {
     auto seed = opts["seed"].as<size_t>();
     auto repeat = opts["repeat"].as<size_t>();
     auto port = opts["port"].as<int>();
-    auto use_pking = opts["use-pking"].as<bool>();
 
     omp_set_nested(1);
-    // omp_set_num_threads(nP);
     if (nP < 10) { omp_set_num_threads(nP); }
     else { omp_set_num_threads(10); }
 
-
-    std::cout << "Starting benchmarks" << std::endl;
+    std::cout << "Starting vector reconstruction benchmarks (direct network send/recv)" << std::endl;
 
     std::shared_ptr<io::NetIOMP> network = nullptr;
     if (opts["localhost"].as<bool>()) {
-        network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, nullptr, true);
+        network = std::make_shared<io::NetIOMP>(pid, nP, latency, port, nullptr, true);
     } else {
         std::ifstream fnet(opts["net-config"].as<std::string>());
         if (!fnet.good()) {
@@ -73,21 +49,23 @@ void benchmark(const bpo::variables_map& opts) {
         json netdata;
         fnet >> netdata;
         fnet.close();
-        std::vector<std::string> ipaddress(nP + 1);
-        std::array<char*, 5> ip{};
-        for (size_t i = 0; i < nP + 1; ++i) {
+        std::vector<std::string> ipaddress(nP);
+        std::vector<char*> ip(nP);
+        for (size_t i = 0; i < nP; ++i) {
             ipaddress[i] = netdata[i].get<std::string>();
             ip[i] = ipaddress[i].data();
         }
-        network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
+        network = std::make_shared<io::NetIOMP>(pid, nP, latency, port, ip.data(), false);
     }
-
-    // Increase socket buffer sizes to prevent deadlocks with large messages
-    increaseSocketBuffers(network.get(), 128 * 1024 * 1024);
-
+    
+    // Increase socket buffer sizes for large vectors
+    // Default Linux buffer is ~200KB, increase to handle large messages
+    int buffer_size = std::max(16 * 1024 * 1024, vec_size * static_cast<int>(sizeof(Ring)) * 2); // At least 16MB or 2x vector size
+    increaseSocketBuffers(network.get(), buffer_size);
 
     json output_data;
     output_data["details"] = {{"num_parties", nP},
+                              {"vec_size", vec_size},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
@@ -101,85 +79,87 @@ void benchmark(const bpo::variables_map& opts) {
     }
     std::cout << std::endl;
 
-
     StatsPoint start(*network);
     network->sync();
 
-    auto circ = generateEqzCircuit(nP, pid).orderGatesByLevel();
-    network->sync();
-
-
-    std::cout << "--- Circuit ---" << std::endl;
-    std::cout << circ << std::endl;
+    // Generate random vector with unique seed per party
+    emp::PRG prg(&emp::zero_block, seed + pid);
+    std::vector<Ring> random_vector(vec_size);
+    for (int i = 0; i < vec_size; ++i) {
+        prg.random_data(&random_vector[i], sizeof(Ring));
+    }
     
-    std::unordered_map<common::utils::wire_t, int> input_pid_map;
-    for (const auto& g : circ.gates_by_level[0]) {
-        if (g->type == common::utils::GateType::kInp) {
-            input_pid_map[g->out] = 1;
+    std::cout << "\n=== Party " << pid << " Random Vector (first 20 elements) ===" << std::endl;
+    for (int i = 0; i < std::min(20, vec_size); ++i) {
+        std::cout << "  Vector[" << i << "] = " << random_vector[i] << std::endl;
+    }
+    std::cout << "=============================================\n" << std::endl;
+    
+    network->sync();
+    
+    std::cout << "Starting reconstruction phase (sending to all parties)" << std::endl;
+    StatsPoint recon_start(*network);
+    
+    // Each party sends their vector to all other parties
+    // With increased buffer sizes, this should not deadlock
+    for (int dest = 0; dest < nP; ++dest) {
+        if (dest != static_cast<int>(pid)) {
+            network->send(dest, random_vector.data(), vec_size * sizeof(Ring));
         }
     }
-
-    std::cout << "Starting preprocessing" << std::endl;
-    StatsPoint preproc_start(*network);
-    // emp::PRG prg(&emp::zero_block, seed);
-    int latency_us = static_cast<int>(latency * 1000);  // Convert ms to microseconds
-    OfflineEvaluator off_eval(nP, pid, network, circ, threads, seed, latency_us);
-    auto preproc = off_eval.run(input_pid_map);
-    std::cout << "Preprocessing complete" << std::endl;
-    network->sync();
-    StatsPoint preproc_end(*network);
-
-    std::cout << "Setting inputs" << std::endl;
-    OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
-    std::unordered_map<common::utils::wire_t, Ring> inputs;
-    for (const auto& [wire, owner] : input_pid_map) {
-        if (owner == static_cast<int>(pid)) {
-            inputs[wire] = static_cast<Ring>(input);
+    network->flush();
+    
+    // Receive vectors from all other parties
+    std::vector<std::vector<Ring>> received_vectors(nP);
+    received_vectors[pid] = random_vector;  // Own vector
+    
+    for (int src = 0; src < nP; ++src) {
+        if (src != static_cast<int>(pid)) {
+            received_vectors[src].resize(vec_size);
+            network->recv(src, received_vectors[src].data(), vec_size * sizeof(Ring));
         }
     }
-    eval.setInputs(inputs);
     
-    std::cout << "Starting online evaluation" << std::endl;
-    StatsPoint online_start(*network);
-    for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
-        eval.evaluateGatesAtDepth(i);
+    // Reconstruct by summing all shares
+    std::vector<Ring> reconstructed_vector(vec_size);
+    for (int i = 0; i < vec_size; ++i) {
+        reconstructed_vector[i] = 0;
+        for (int p = 0; p < nP; ++p) {
+            reconstructed_vector[i] += received_vectors[p][i];
+        }
     }
-    network->sync();
-    StatsPoint online_end(*network);
-    std::cout << "Online evaluation complete" << std::endl;
     
-    Ring out = eval.getOutputs()[0];
-    std::cout << "Output is: " << out << std::endl;
+    network->sync();
+    StatsPoint recon_end(*network);
+    std::cout << "Reconstruction complete" << std::endl;
+    
+    std::cout << "\n=== Reconstruction Results ===" << std::endl;
+    std::cout << "Party " << pid << " reconstructed " << reconstructed_vector.size() << " values" << std::endl;
+    std::cout << "First 20 reconstructed values:" << std::endl;
+    for (int i = 0; i < std::min(20, vec_size); ++i) {
+        std::cout << "  Reconstructed[" << i << "]: " << reconstructed_vector[i] << std::endl;
+    }
+    std::cout << "================================\n" << std::endl;
 
     StatsPoint end(*network);
 
-
-    auto preproc_rbench = preproc_end - preproc_start;
-    auto online_rbench = online_end - online_start;
+    auto recon_rbench = recon_end - recon_start;
     auto total_rbench = end - start;
-    output_data["benchmarks"].push_back(preproc_rbench);
-    output_data["benchmarks"].push_back(online_rbench);
+    output_data["benchmarks"].push_back(recon_rbench);
     output_data["benchmarks"].push_back(total_rbench);
 
-
-    size_t pre_bytes_sent = 0;
-    for (const auto& val : preproc_rbench["communication"]) {
-        pre_bytes_sent += val.get<int64_t>();
-    }
-    size_t online_bytes_sent = 0;
-    for (const auto& val : online_rbench["communication"]) {
-        online_bytes_sent += val.get<int64_t>();
+    size_t recon_bytes_sent = 0;
+    for (const auto& val : recon_rbench["communication"]) {
+        recon_bytes_sent += val.get<int64_t>();
     }
     size_t total_bytes_sent = 0;
     for (const auto& val : total_rbench["communication"]) {
         total_bytes_sent += val.get<int64_t>();
     }
 
-    // std::cout << "--- Repetition " << r + 1 << " ---" << std::endl;
-    std::cout << "preproc time: " << preproc_rbench["time"] << " ms" << std::endl;
-    std::cout << "preproc sent: " << pre_bytes_sent << " bytes" << std::endl;
-    std::cout << "online time: " << online_rbench["time"] << " ms" << std::endl;
-    std::cout << "online sent: " << online_bytes_sent << " bytes" << std::endl;
+    std::cout << "--- Benchmark Results ---" << std::endl;
+    std::cout << "reconstruction time: " << recon_rbench["time"] << " ms" << std::endl;
+    std::cout << "reconstruction sent: " << recon_bytes_sent << " bytes" << std::endl;
     std::cout << "total time: " << total_rbench["time"] << " ms" << std::endl;
     std::cout << "total sent: " << total_bytes_sent << " bytes" << std::endl;
     std::cout << std::endl;
@@ -203,7 +183,7 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("input,i", bpo::value<int>()->required(), "Input value for equality check.")
+        ("vec-size,v", bpo::value<int>()->default_value(100), "Size of the vector to create and reconstruct.")
         ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
@@ -212,15 +192,14 @@ bpo::options_description programOptions() {
         ("localhost", bpo::bool_switch(), "All parties are on same machine.")
         ("port", bpo::value<int>()->default_value(10000), "Base port for networking.")
         ("output,o", bpo::value<std::string>(), "File to save benchmarks.")
-        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.")
-        ("use-pking", bpo::value<bool>()->default_value(true), "Use king party for reconstruction (true) or direct reconstruction (false).");
+        ("repeat,r", bpo::value<size_t>()->default_value(1), "Number of times to run benchmarks.");
   return desc;
 }
 // clang-format on
 
 int main(int argc, char* argv[]) {
     auto prog_opts(programOptions());
-    bpo::options_description cmdline("Benchmark equality circuits.");
+    bpo::options_description cmdline("Benchmark vector reconstruction using direct network send/recv: create random vector and reconstruct it.");
     cmdline.add(prog_opts);
     cmdline.add_options()(
       "config,c", bpo::value<std::string>(),

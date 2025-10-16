@@ -1,7 +1,6 @@
 #include "online_evaluator.h"
 
 #include "../utils/helpers.h"
-#include <omp.h>
 
 namespace graphdb
 {
@@ -25,7 +24,7 @@ namespace graphdb
                 share_recv[pKing - 1] = shares_list;
                 usleep(latency);
                 
-                #pragma omp parallel for
+                // Receive from all parties (not parallelized as recv is blocking)
                 for (int p = 1; p <= nP; ++p) {
                     if (p != pKing) {
                         share_recv[p - 1].resize(num_shares);
@@ -33,14 +32,14 @@ namespace graphdb
                     }
                 }
                 
+                // Aggregate shares
                 for (int p = 0; p < nP; ++p) {
-                    #pragma omp parallel for
                     for (size_t i = 0; i < num_shares; ++i) {
                         reconstructed_list[i] += share_recv[p][i];
                     }
                 }
                 
-                #pragma omp parallel for
+                // Send result to all parties (sequential for now to avoid race conditions)
                 for (int p = 1; p <= nP; ++p) {
                     if (p != pKing) {
                         network->send(p, reconstructed_list.data(), reconstructed_list.size() * sizeof(Ring));
@@ -53,7 +52,7 @@ namespace graphdb
             std::vector<std::vector<Ring>> share_recv(nP);
             share_recv[pid - 1] = shares_list;
             
-            #pragma omp parallel for
+            // Send to all parties (sequential for now to avoid race conditions)
             for (int p = 1; p <= nP; ++p) {
                 if (p != pid) {
                     network->send(p, shares_list.data(), shares_list.size() * sizeof(Ring));
@@ -62,7 +61,7 @@ namespace graphdb
             
             usleep(latency);
             
-            #pragma omp parallel for
+            // Receive from all parties
             for (int p = 1; p <= nP; ++p) {
                 if (p != pid) {
                     share_recv[p - 1].resize(num_shares);
@@ -70,8 +69,8 @@ namespace graphdb
                 }
             }
             
+            // Aggregate shares
             for (int p = 0; p < nP; ++p) {
-                #pragma omp parallel for
                 for (size_t i = 0; i < num_shares; ++i) {
                     reconstructed_list[i] += share_recv[p][i];
                 }
@@ -93,13 +92,13 @@ namespace graphdb
           circ_(std::move(circ)),
           wires_(circ.num_wires)
     {
-        // tpool_ = std::make_shared<ThreadPool>(threads);
+        tpool_ = std::make_shared<common::utils::ThreadPool>(threads);
     }
 
     OnlineEvaluator::OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                                      PreprocCircuit<Ring> preproc,
                                      common::utils::LevelOrderedCircuit circ,
-                                     std::shared_ptr<ThreadPool> tpool, int seed, int latency, bool use_pking)
+                                     std::shared_ptr<common::utils::ThreadPool> tpool, int seed, int latency, bool use_pking)
         : nP_(nP),
           id_(id),
           latency_(latency),
@@ -199,7 +198,7 @@ namespace graphdb
 
         // Compute final output share
         std::vector<Ring> recon_out(num_eqz_gates, 0);
-        // #pragma omp parallel for
+        #pragma omp parallel for
         for (int i = 0; i < num_eqz_gates; ++i) {
             auto *pre_eqz = static_cast<PreprocEqzGate<Ring> *>(preproc_.gates[eqz_gates[i].out].get());
             std::vector<Ring> r2_bits(RINGSIZEBITS);
@@ -266,12 +265,12 @@ namespace graphdb
             }
             usleep(latency_);
 
-            // Aggregate received z values
-            for (int pid = 1; pid < nP_; ++pid) {
+            // Aggregate received z values from other parties
+            for (int pid = 2; pid <= nP_; ++pid) {
                 size_t idx_vec = 0;
                 for (int idx_gate = 0; idx_gate < shuffle_gates.size(); ++idx_gate) {
                     size_t vec_size = shuffle_gates[idx_gate].in.size();
-                    std::vector<Ring> z(z_recv_all[pid].begin() + idx_vec, z_recv_all[pid].begin() + idx_vec + vec_size);
+                    std::vector<Ring> z(z_recv_all[pid - 1].begin() + idx_vec, z_recv_all[pid - 1].begin() + idx_vec + vec_size);
                     for (int i = 0; i < vec_size; ++i) {
                         z_sum[idx_gate][i] += z[i];
                     }
@@ -339,60 +338,62 @@ namespace graphdb
         
     void OnlineEvaluator::permAndShEvaluate(const std::vector<common::utils::SIMDOGate> &permAndSh_gates) {
         if (id_ == 0) { return; }
-        #pragma omp parallel sections
-        {
-            #pragma omp section
-            {
-                if (nP_ < 10) { omp_set_num_threads(nP_); }
-                else { omp_set_num_threads(10); }
-                #pragma omp parallel for
-                for (int idx_gate = 0; idx_gate < permAndSh_gates.size(); ++idx_gate) {
+        
+        // Use thread pool to execute send and receive in parallel
+        auto send_future = tpool_->enqueue([&]() {
+            for (int idx_gate = 0; idx_gate < permAndSh_gates.size(); ++idx_gate) {
+                auto *pre_permAndSh = static_cast<PreprocPermAndShGate<Ring> *>(preproc_.gates[permAndSh_gates[idx_gate].out].get());
+                size_t vec_size = permAndSh_gates[idx_gate].in.size();
+                std::vector<Ring> z(vec_size, 0);
+                if (id_ != permAndSh_gates[idx_gate].owner) {
+                    for (int i = 0; i < vec_size; ++i) {
+                        z[i] = wires_[permAndSh_gates[idx_gate].in[i]] - pre_permAndSh->a[i].valueAt();
+                        wires_[permAndSh_gates[idx_gate].outs[i]] = pre_permAndSh->b[i].valueAt();
+                    }
+                    network_->send(permAndSh_gates[idx_gate].owner, z.data(), z.size() * sizeof(Ring));
+                    network_->flush(permAndSh_gates[idx_gate].owner);
+                }
+            }
+        });
+
+        auto recv_future = tpool_->enqueue([&]() {
+            usleep(latency_);
+            for (int idx_gate = 0; idx_gate < permAndSh_gates.size(); ++idx_gate) {
+                if (id_ == permAndSh_gates[idx_gate].owner) {
                     auto *pre_permAndSh = static_cast<PreprocPermAndShGate<Ring> *>(preproc_.gates[permAndSh_gates[idx_gate].out].get());
                     size_t vec_size = permAndSh_gates[idx_gate].in.size();
-                    std::vector<Ring> z(vec_size, 0);
-                    if (id_ != permAndSh_gates[idx_gate].owner) {
-                        for (int i = 0; i < vec_size; ++i) {
-                            z[i] = wires_[permAndSh_gates[idx_gate].in[i]] - pre_permAndSh->a[i].valueAt();
-                            wires_[permAndSh_gates[idx_gate].outs[i]] = pre_permAndSh->b[i].valueAt();
+                    std::vector<std::vector<Ring>> z(nP_, std::vector<Ring>(vec_size, 0));
+                    
+                    for (int pid = 1; pid <= nP_; ++pid) {
+                        if (pid != permAndSh_gates[idx_gate].owner) {
+                            std::vector<Ring> z_recv(vec_size);
+                            network_->recv(pid, z_recv.data(), z_recv.size() * sizeof(Ring));
+                            for (int i = 0; i < vec_size; ++i) {
+                                z[pid - 1][i] += z_recv[i];
+                            }
+                        } else {
+                            for (int i = 0; i < vec_size; ++i) {
+                                z[pid - 1][i] += wires_[permAndSh_gates[idx_gate].in[i]];
+                            }
                         }
-                        network_->send(permAndSh_gates[idx_gate].owner, z.data(), z.size() * sizeof(Ring));
-                        network_->flush(permAndSh_gates[idx_gate].owner);
+                    }
+                    for (int i = 0; i < vec_size; ++i) {
+                        Ring sum = Ring(0);
+                        for (int pid = 0; pid < nP_; ++pid) {
+                            sum += z[pid][pre_permAndSh->pi[i]];
+                        }
+                        wires_[permAndSh_gates[idx_gate].outs[i]] = sum + pre_permAndSh->delta[i].valueAt();
                     }
                 }
             }
-
-            #pragma omp section
-            {
-                usleep(latency_);
-                for (int idx_gate = 0; idx_gate < permAndSh_gates.size(); ++idx_gate) {
-                    if (id_ == permAndSh_gates[idx_gate].owner) {
-                        auto *pre_permAndSh = static_cast<PreprocPermAndShGate<Ring> *>(preproc_.gates[permAndSh_gates[idx_gate].out].get());
-                        size_t vec_size = permAndSh_gates[idx_gate].in.size();
-                        std::vector<std::vector<Ring>> z(nP_, std::vector<Ring>(vec_size, 0));
-                        #pragma omp parallel for
-                        for (int pid = 1; pid <= nP_; ++pid) {
-                            if (pid != permAndSh_gates[idx_gate].owner) {
-                                std::vector<Ring> z_recv(vec_size);
-                                network_->recv(pid, z_recv.data(), z_recv.size() * sizeof(Ring));
-                                for (int i = 0; i < vec_size; ++i) {
-                                    z[pid - 1][i] += z_recv[i];
-                                }
-                            } else {
-                                for (int i = 0; i < vec_size; ++i) {
-                                    z[pid - 1][i] += wires_[permAndSh_gates[idx_gate].in[i]];
-                                }
-                            }
-                        }
-                        for (int i = 0; i < vec_size; ++i) {
-                            Ring sum = Ring(0);
-                            for (int pid = 0; pid < nP_; ++pid) {
-                                sum += z[pid][pre_permAndSh->pi[i]];
-                            }
-                            wires_[permAndSh_gates[idx_gate].outs[i]] = sum + pre_permAndSh->delta[i].valueAt();
-                        }
-                    }
-                }
-            }
+        });
+        
+        // Wait for both send and receive operations to complete
+        if (send_future.valid()) {
+            send_future.wait();
+        }
+        if (recv_future.valid()) {
+            recv_future.wait();
         }
     }
 
@@ -877,66 +878,60 @@ namespace graphdb
         }
         
         if (id_ == 1) {
-            // Party 1 collects z values from all parties for all gates
-            std::vector<std::vector<std::vector<Ring>>> all_z_t_recv(num_gates, std::vector<std::vector<Ring>>(nP_));
-            std::vector<std::vector<std::vector<std::vector<Ring>>>> all_z_p_recv(num_gates);
-            std::vector<std::vector<std::vector<Ring>>> all_z_label_recv(num_gates, std::vector<std::vector<Ring>>(nP_));
-            
-            for (size_t g = 0; g < num_gates; ++g) {
-                all_z_p_recv[g].resize(nP_, std::vector<std::vector<Ring>>(num_payloads_vec[g]));
-                all_z_t_recv[g][0] = all_z_t[g];
-                all_z_p_recv[g][0] = all_z_p[g];
-                all_z_label_recv[g][0] = all_z_label[g];
-            }
-            
-            #pragma omp parallel for
-            for (int pid = 2; pid <= nP_; ++pid) {
-                for (size_t g = 0; g < num_gates; ++g) {
-                    size_t vec_size = vec_sizes[g];
-                    size_t num_payloads = num_payloads_vec[g];
-                    
-                    all_z_t_recv[g][pid - 1].resize(vec_size);
-                    all_z_label_recv[g][pid - 1].resize(vec_size);
-                    network_->recv(pid, all_z_t_recv[g][pid - 1].data(), vec_size * sizeof(Ring));
-                    for (size_t p = 0; p < num_payloads; ++p) {
-                        all_z_p_recv[g][pid - 1][p].resize(vec_size);
-                        network_->recv(pid, all_z_p_recv[g][pid - 1][p].data(), vec_size * sizeof(Ring));
-                    }
-                    network_->recv(pid, all_z_label_recv[g][pid - 1].data(), vec_size * sizeof(Ring));
-                }
-            }
-            usleep(latency_);
-            
-            // Sum and permute for all gates
+            // Party 1 collects and accumulates z values from all parties for each gate without storing full copies
             for (size_t g = 0; g < num_gates; ++g) {
                 size_t vec_size = vec_sizes[g];
                 size_t num_payloads = num_payloads_vec[g];
-                
+
                 std::vector<Ring> z_t_sum(vec_size, 0);
                 std::vector<std::vector<Ring>> z_p_sum(num_payloads, std::vector<Ring>(vec_size, 0));
                 std::vector<Ring> z_label_sum(vec_size, 0);
-                
-                for (int pid = 0; pid < nP_; ++pid) {
+
+                // Start with local contributions
+                for (size_t i = 0; i < vec_size; ++i) {
+                    z_t_sum[i] = all_z_t[g][i];
+                    z_label_sum[i] = all_z_label[g][i];
+                }
+                for (size_t p = 0; p < num_payloads; ++p) {
                     for (size_t i = 0; i < vec_size; ++i) {
-                        z_t_sum[i] += all_z_t_recv[g][pid][i];
-                        z_label_sum[i] += all_z_label_recv[g][pid][i];
+                        z_p_sum[p][i] = all_z_p[g][p][i];
+                    }
+                }
+
+                // Temporary buffers reused for each incoming party
+                std::vector<Ring> z_t_recv(vec_size);
+                std::vector<std::vector<Ring>> z_p_recv(num_payloads, std::vector<Ring>(vec_size));
+                std::vector<Ring> z_label_recv(vec_size);
+
+                #pragma omp parallel for
+                for (int pid = 2; pid <= nP_; ++pid) {
+                    network_->recv(pid, z_t_recv.data(), vec_size * sizeof(Ring));
+                    for (size_t p = 0; p < num_payloads; ++p) {
+                        network_->recv(pid, z_p_recv[p].data(), vec_size * sizeof(Ring));
+                    }
+                    network_->recv(pid, z_label_recv.data(), vec_size * sizeof(Ring));
+
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        z_t_sum[i] += z_t_recv[i];
+                        z_label_sum[i] += z_label_recv[i];
                     }
                     for (size_t p = 0; p < num_payloads; ++p) {
                         for (size_t i = 0; i < vec_size; ++i) {
-                            z_p_sum[p][i] += all_z_p_recv[g][pid][p][i];
+                            z_p_sum[p][i] += z_p_recv[p][i];
                         }
                     }
                 }
-                
+                usleep(latency_);
+
                 std::vector<Ring> z_t_perm(vec_size);
                 std::vector<std::vector<Ring>> z_p_perm(num_payloads, std::vector<Ring>(vec_size));
                 std::vector<Ring> z_label_perm(vec_size);
-                
+
                 for (size_t i = 0; i < vec_size; ++i) {
                     int pi_i = pre_compacts[g]->shuffle_pi[i];
                     z_t_perm[i] = z_t_sum[pi_i] + pre_compacts[g]->shuffle_b[pi_i].valueAt();
                     z_label_perm[i] = z_label_sum[pi_i] + pre_compacts[g]->shuffle_b[pi_i].valueAt();
-                    
+
                     all_t_shuffled[g][i] = pre_compacts[g]->shuffle_c[i].valueAt();
                     all_label_shuffled[g][i] = pre_compacts[g]->shuffle_c[i].valueAt();
                 }
@@ -947,7 +942,7 @@ namespace graphdb
                         all_p_shuffled[g][p][i] = pre_compacts[g]->shuffle_c[i].valueAt();
                     }
                 }
-                
+
                 // Send to party 2
                 network_->send(2, z_t_perm.data(), vec_size * sizeof(Ring));
                 for (size_t p = 0; p < num_payloads; ++p) {
@@ -956,7 +951,7 @@ namespace graphdb
                 network_->send(2, z_label_perm.data(), vec_size * sizeof(Ring));
             }
             network_->flush(2);
-            
+
         } else {
             // Parties 2 to nP
             // Send z values to party 1 for all gates
@@ -1059,30 +1054,23 @@ namespace graphdb
         for (size_t g = 0; g < num_gates; ++g) {
             size_t vec_size = vec_sizes[g];
             size_t num_payloads = num_payloads_vec[g];
-            
-            std::unordered_map<common::utils::wire_t, Ring> temp_t_outputs;
-            std::vector<std::unordered_map<common::utils::wire_t, Ring>> temp_p_outputs(num_payloads);
-            
+
             for (size_t i = 0; i < vec_size; ++i) {
-                int idx_perm = static_cast<int>(all_labels_reconstructed[label_offset + i]);
-                if (idx_perm >= 0 && idx_perm < vec_size) {
-                    temp_t_outputs[compact_gates[g].outs[idx_perm]] = all_t_shuffled[g][i];
-                    for (size_t p = 0; p < num_payloads; ++p) {
-                        temp_p_outputs[p][compact_gates[g].outs[vec_size * (p + 1) + idx_perm]] = all_p_shuffled[g][p][i];
-                    }
+                Ring label = all_labels_reconstructed[label_offset + i];
+                if (label < 0 || label >= static_cast<Ring>(vec_size)) {
+                    continue;
+                }
+                size_t idx_perm = static_cast<size_t>(label);
+
+                auto t_out_wire = compact_gates[g].outs[idx_perm];
+                wires_[t_out_wire] = all_t_shuffled[g][i];
+
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    auto payload_out_wire = compact_gates[g].outs[vec_size * (p + 1) + idx_perm];
+                    wires_[payload_out_wire] = all_p_shuffled[g][p][i];
                 }
             }
-            
-            // Write outputs
-            for (const auto& [wire_id, value] : temp_t_outputs) {
-                wires_[wire_id] = value;
-            }
-            for (size_t p = 0; p < num_payloads; ++p) {
-                for (const auto& [wire_id, value] : temp_p_outputs[p]) {
-                    wires_[wire_id] = value;
-                }
-            }
-            
+
             label_offset += vec_size;
         }
     }
@@ -1329,8 +1317,9 @@ namespace graphdb
         std::vector<Ring> ind_compacted(vec_size, Ring(0));
         
         for (size_t i = 0; i < vec_size; ++i) {
-            int idx_perm = static_cast<int>(label_reconstructed[i]);
-            if (idx_perm >= 0 && idx_perm < static_cast<int>(vec_size)) {
+            Ring label = label_reconstructed[i];
+            if (label >= 0 && label < static_cast<Ring>(vec_size)) {
+                size_t idx_perm = static_cast<size_t>(label);
                 key_compacted[idx_perm] = key_shuffled[i];
                 ind_compacted[idx_perm] = ind_shuffled[i];
             }
@@ -1824,8 +1813,9 @@ namespace graphdb
             all_key_c_shares[g].resize(vec_size);
             
             for (size_t i = 0; i < vec_size; ++i) {
-                int idx_perm = static_cast<int>(all_labels_reconstructed[label_offset + i]);
-                if (idx_perm >= 0 && idx_perm < static_cast<int>(vec_size)) {
+                Ring label = all_labels_reconstructed[label_offset + i];
+                if (label >= 0 && label < static_cast<Ring>(vec_size)) {
+                    size_t idx_perm = static_cast<size_t>(label);
                     all_key_compacted[g][idx_perm] = all_key_shuffled[g][i];
                     all_ind_compacted[g][idx_perm] = all_ind_shuffled[g][i];
                 }
@@ -2411,17 +2401,19 @@ namespace graphdb
         std::vector<Ring> key2_compacted(t2_vec_size);
         
         for (size_t i = 0; i < t1_vec_size; ++i) {
-            int label = static_cast<int>(label_t1_reconstructed[i]);
-            if (label >= 0 && label < static_cast<int>(t1_vec_size)) {
-                key1_compacted[label] = key1_shuffled[i];
-                v1_compacted[label] = v1_shuffled[i];
+            Ring label = label_t1_reconstructed[i];
+            if (label >= 0 && label < static_cast<Ring>(t1_vec_size)) {
+                size_t idx = static_cast<size_t>(label);
+                key1_compacted[idx] = key1_shuffled[i];
+                v1_compacted[idx] = v1_shuffled[i];
             }
         }
         
         for (size_t i = 0; i < t2_vec_size; ++i) {
-            int label = static_cast<int>(label_t2_reconstructed[i]);
-            if (label >= 0 && label < static_cast<int>(t2_vec_size)) {
-                key2_compacted[label] = key2_shuffled[i];
+            Ring label = label_t2_reconstructed[i];
+            if (label >= 0 && label < static_cast<Ring>(t2_vec_size)) {
+                size_t idx = static_cast<size_t>(label);
+                key2_compacted[idx] = key2_shuffled[i];
             }
         }
 
@@ -2503,9 +2495,10 @@ namespace graphdb
         std::vector<Ring> key2_uncompacted(t2_vec_size);
         
         for (size_t i = 0; i < t2_vec_size; ++i) {
-            int label = static_cast<int>(label_t2_reconstructed[i]);
-            if (label >= 0 && label < static_cast<int>(t2_vec_size)) {
-                key2_uncompacted[i] = key2_compacted[label];
+            Ring label = label_t2_reconstructed[i];
+            if (label >= 0 && label < static_cast<Ring>(t2_vec_size)) {
+                size_t idx = static_cast<size_t>(label);
+                key2_uncompacted[i] = key2_compacted[idx];
             } else {
                 key2_uncompacted[i] = Ring(0);
             }
@@ -2515,9 +2508,10 @@ namespace graphdb
         std::vector<Ring> extended_diff_shares(t2_vec_size);
         
         for (size_t i = 0; i < t2_vec_size; ++i) {
-            int label = static_cast<int>(label_t2_reconstructed[i]);
-            if (label >= 0 && label < static_cast<int>(t2_vec_size)) {
-                extended_diff_shares[i] = extended_diff_shares_[label];
+            Ring label = label_t2_reconstructed[i];
+            if (label >= 0 && label < static_cast<Ring>(t2_vec_size)) {
+                size_t idx = static_cast<size_t>(label);
+                extended_diff_shares[i] = extended_diff_shares_[idx];
             } else {
                 extended_diff_shares[i] = Ring(0);
             }
@@ -2869,7 +2863,7 @@ namespace graphdb
                 }
             }
             usleep(latency_);
-            #pragma omp parallel for
+            // #pragma omp parallel for
             for (int pid = 1; pid <= nP_; ++pid) {
                 if (pid != id_) {
                     network_->recv(pid, output_shares[pid - 1].data(), output_shares[pid - 1].size() * sizeof(Ring));

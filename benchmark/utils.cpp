@@ -3,9 +3,62 @@
 #include <NTL/BasicThreadPool.h>
 #include <NTL/ZZ_p.h>
 #include <NTL/ZZ_pE.h>
+#include <sys/socket.h>
+#include <cerrno>
 
 #include <fstream>
 #include <iostream>
+
+void increaseSocketBuffers(io::NetIOMP* network, int buffer_size) {
+    int actual_sndbuf = 0, actual_rcvbuf = 0;
+    socklen_t optlen = sizeof(int);
+    bool first_socket = true;
+    
+    for (int i = 0; i < network->nP; ++i) {
+        if (i != network->party) {
+            // Get the send and receive channels
+            auto send_channel = network->getSendChannel(i);
+            auto recv_channel = network->getRecvChannel(i);
+            
+            if (send_channel) {
+                int fd = send_channel->consocket;
+                if (fd >= 0) {
+                    int ret1 = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer_size, sizeof(buffer_size));
+                    int ret2 = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size));
+                    
+                    if (first_socket) {
+                        // Verify actual buffer sizes set
+                        getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &actual_sndbuf, &optlen);
+                        getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actual_rcvbuf, &optlen);
+                        first_socket = false;
+                        
+                        if (ret1 != 0 || ret2 != 0) {
+                            std::cout << "Warning: setsockopt failed (errno: " << errno << ")" << std::endl;
+                        }
+                    }
+                }
+            }
+            
+            if (recv_channel && recv_channel != send_channel) {
+                int fd = recv_channel->consocket;
+                if (fd >= 0) {
+                    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer_size, sizeof(buffer_size));
+                    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size));
+                }
+            }
+        }
+    }
+    std::cout << "Requested socket buffers: " << buffer_size << " bytes" << std::endl;
+    if (actual_sndbuf > 0 || actual_rcvbuf > 0) {
+        std::cout << "Actual socket buffers: SNDBUF=" << actual_sndbuf 
+                  << " bytes, RCVBUF=" << actual_rcvbuf << " bytes" << std::endl;
+        if (actual_sndbuf < buffer_size || actual_rcvbuf < buffer_size) {
+            std::cout << "Warning: Socket buffers were capped by system limits!" << std::endl;
+            std::cout << "Consider running Docker with: --sysctl net.core.rmem_max=" << buffer_size 
+                      << " --sysctl net.core.wmem_max=" << buffer_size << std::endl;
+        }
+    }
+}
 
 TimePoint::TimePoint() : time(timepoint_t::clock::now()) {}
 

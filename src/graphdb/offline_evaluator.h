@@ -9,6 +9,7 @@
 
 #include "../io/netmp.h"
 #include "../utils/circuit.h"
+#include "../utils/thread_pool.h"
 
 
 #include "preproc.h"
@@ -27,7 +28,7 @@ class OfflineEvaluator {
   RandGenPool rgen_;
   std::shared_ptr<io::NetIOMP> network_;
   common::utils::LevelOrderedCircuit circ_;
-  std::shared_ptr<ThreadPool> tpool_;
+  std::shared_ptr<common::utils::ThreadPool> tpool_;
   PreprocCircuit<Ring> preproc_;
 
   // Used for running common coin protocol. Returns common random PRG key which

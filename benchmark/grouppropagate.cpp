@@ -126,6 +126,10 @@ void benchmark(const bpo::variables_map& opts) {
         network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
     }
 
+    // Increase socket buffer sizes to prevent deadlocks with large messages
+    increaseSocketBuffers(network.get(), 128 * 1024 * 1024);
+
+
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"t1_size", t1_size},
@@ -221,24 +225,27 @@ void benchmark(const bpo::variables_map& opts) {
         }
     }
 
-    // Print inputs in structured format
-    std::cout << "\n=== INPUT VECTORS (Party " << pid << ") ===" << std::endl;
+    // Print inputs in structured format (first 20 entries)
+    std::cout << "\n=== INPUT VECTORS (Party " << pid << ") - First 20 entries ===" << std::endl;
     std::cout << "T1 - Key1 vector (1=marked entry): ";
-    for (size_t i = 0; i < t1_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), t1_size); ++i) {
         std::cout << key1_input_values[i] << " ";
     }
+    if (t1_size > 20) std::cout << "...";
     std::cout << std::endl;
     
     std::cout << "T1 - Value vector (to propagate):  ";
-    for (size_t i = 0; i < t1_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), t1_size); ++i) {
         std::cout << v1_input_values[i] << " ";
     }
+    if (t1_size > 20) std::cout << "...";
     std::cout << std::endl;
     
     std::cout << "T2 - Key2 vector (1=group start):  ";
-    for (size_t i = 0; i < t2_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), t2_size); ++i) {
         std::cout << key2_input_values[i] << " ";
     }
+    if (t2_size > 20) std::cout << "...";
     std::cout << std::endl;
     std::cout << "Total inputs set: " << inputs.size() << std::endl;
     
@@ -251,19 +258,21 @@ void benchmark(const bpo::variables_map& opts) {
     auto outputs = eval.getOutputs();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-    // Print outputs in structured format
+    // Print outputs in structured format (first 20 entries)
     // Output structure: t2_size for key2, t2_size for v (propagated)
-    std::cout << "\n=== OUTPUT VECTORS (Party " << pid << ") ===" << std::endl;
+    std::cout << "\n=== OUTPUT VECTORS (Party " << pid << ") - First 20 entries ===" << std::endl;
     std::cout << "Key2 (restored):             ";
-    for (size_t i = 0; i < t2_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), t2_size); ++i) {
         std::cout << outputs[i] << " ";
     }
+    if (t2_size > 20) std::cout << "...";
     std::cout << std::endl;
     
     std::cout << "Value (propagated to groups): ";
-    for (size_t i = 0; i < t2_size; ++i) {
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), t2_size); ++i) {
         std::cout << outputs[t2_size + i] << " ";
     }
+    if (t2_size > 20) std::cout << "...";
     std::cout << std::endl << std::endl;
     
     network->sync();

@@ -108,6 +108,14 @@ void benchmark(const bpo::variables_map& opts) {
         network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
     }
 
+    // Increase socket buffer sizes to prevent deadlocks with large messages
+    // Calculate based on expected output size: vec_size * (1 + num_payloads) * 8 bytes
+    // Multiply by 3 for safety factor and by (nP-1) for multiple parties
+    size_t expected_output_bytes = vec_size * (1 + num_payloads) * sizeof(Ring);
+    int buffer_size = std::max(128 * 1024 * 1024, 
+                                static_cast<int>(expected_output_bytes * (nP - 1) * 3));
+    increaseSocketBuffers(network.get(), buffer_size);
+
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"vec_size", vec_size},
@@ -194,21 +202,21 @@ void benchmark(const bpo::variables_map& opts) {
         }
     }
 
-    // Print inputs in structured format
-    std::cout << "\n=== INPUT VECTORS (Party " << pid << ") ===" << std::endl;
-    std::cout << "Tag vector (t): ";
-    for (size_t i = 0; i < vec_size; ++i) {
-        std::cout << t_input_values[i] << " ";
-    }
-    std::cout << std::endl;
+    // Print inputs in structured format (first 20 entries)
+    // std::cout << "\n=== INPUT VECTORS (Party " << pid << ") ===" << std::endl;
+    // std::cout << "Tag vector (t) - first 20: ";
+    // for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
+    //     std::cout << t_input_values[i] << " ";
+    // }
+    // std::cout << std::endl;
     
-    for (size_t p = 0; p < num_payloads; ++p) {
-        std::cout << "Payload[" << p << "]:     ";
-        for (size_t i = 0; i < vec_size; ++i) {
-            std::cout << p_input_values[p][i] << " ";
-        }
-        std::cout << std::endl;
-    }
+    // for (size_t p = 0; p < num_payloads; ++p) {
+    //     std::cout << "Payload[" << p << "] - first 20:     ";
+    //     for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
+    //         std::cout << p_input_values[p][i] << " ";
+    //     }
+    //     std::cout << std::endl;
+    // }
     std::cout << "Total inputs set: " << inputs.size() << std::endl;
     
     eval.setInputs(inputs);
@@ -218,29 +226,33 @@ void benchmark(const bpo::variables_map& opts) {
     for (size_t i = 0; i < circ.gates_by_level.size(); ++i) {
         eval.evaluateGatesAtDepth(i);
     }
+    network->flush();
     network->sync();
     StatsPoint online_end(*network);
     std::cout << "Online evaluation complete" << std::endl;
 
+    std::cout << "Getting outputs..." << std::endl;
+    network->flush();
     auto outputs = eval.getOutputs();
+    network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
     
-    // Print outputs in structured format
-    std::cout << "\n=== OUTPUT VECTORS (Party " << pid << ") ===" << std::endl;
-    std::cout << "Tag vector (t_compacted): ";
-    for (size_t i = 0; i < vec_size; ++i) {
-        std::cout << outputs[i] << " ";
-    }
-    std::cout << std::endl;
+    // Print outputs in structured format (first 20 entries)
+    // std::cout << "\n=== OUTPUT VECTORS (Party " << pid << ") ===" << std::endl;
+    // std::cout << "Tag vector (t_compacted) - first 20: ";
+    // for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
+    //     std::cout << outputs[i] << " ";
+    // }
+    // std::cout << std::endl;
     
-    for (size_t p = 0; p < num_payloads; ++p) {
-        std::cout << "Payload[" << p << "] (compacted):  ";
-        for (size_t i = 0; i < vec_size; ++i) {
-            std::cout << outputs[vec_size * (p + 1) + i] << " ";
-        }
-        std::cout << std::endl;
-    }
-    std::cout << std::endl;
+    // for (size_t p = 0; p < num_payloads; ++p) {
+    //     std::cout << "Payload[" << p << "] (compacted) - first 20:  ";
+    //     for (size_t i = 0; i < std::min(static_cast<size_t>(20), vec_size); ++i) {
+    //         std::cout << outputs[vec_size * (p + 1) + i] << " ";
+    //     }
+    //     std::cout << std::endl;
+    // }
+    // std::cout << std::endl;
     
     
 

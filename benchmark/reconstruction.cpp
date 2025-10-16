@@ -83,6 +83,9 @@ void benchmark(const bpo::variables_map& opts) {
         network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
     }
 
+    // Increase socket buffer sizes to prevent deadlocks with large messages
+    increaseSocketBuffers(network.get(), 128 * 1024 * 1024);
+
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"num_inputs", num_inputs},
@@ -151,8 +154,8 @@ void benchmark(const bpo::variables_map& opts) {
     
     // Get outputs
     // auto outputs = eval.getOutputs();
-    // std::cout << "Reconstruction outputs:" << std::endl;
-    // for (size_t i = 0; i < outputs.size(); ++i) {
+    // std::cout << "Reconstruction outputs (first 20):" << std::endl;
+    // for (size_t i = 0; i < std::min(static_cast<size_t>(20), outputs.size()); ++i) {
     //     std::cout << "  Output[" << i << "]: " << outputs[i] << std::endl;
     // }
 

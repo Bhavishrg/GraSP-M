@@ -46,15 +46,129 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 make benchmarks
 ```
 
+## Network Configuration and Socket Buffers
+
+### Socket Buffer Sizes
+The benchmarks automatically configure socket buffer sizes to prevent deadlocks with large data transfers. The default is 128 MB per socket buffer, which is sufficient for most use cases.
+
+**Memory Usage Estimates:**
+- 2 parties: ~512 MB per process in socket buffers
+- 5 parties: ~2 GB per process in socket buffers
+- 10 parties: ~4.5 GB per process in socket buffers
+
+For systems with limited memory (< 32 GB), you may want to reduce buffer sizes in the source code. For systems with abundant memory (> 64 GB), larger buffers can improve performance.
+
+### System-Level Buffer Limits
+If you encounter socket buffer limitation warnings, you may need to increase system limits:
+
+**Check current limits:**
+```sh
+cat /proc/sys/net/core/rmem_max  # Receive buffer max
+cat /proc/sys/net/core/wmem_max  # Send buffer max
+```
+
+**Increase limits (requires root on host machine):**
+```sh
+# Temporary (until reboot)
+sudo sysctl -w net.core.rmem_max=134217728  # 128 MB
+sudo sysctl -w net.core.wmem_max=134217728  # 128 MB
+
+# Permanent
+echo "net.core.rmem_max = 134217728" | sudo tee -a /etc/sysctl.conf
+echo "net.core.wmem_max = 134217728" | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+```
+
+**For Docker containers:**
+```sh
+# Run Docker with increased buffer limits
+docker run -it \
+  --sysctl net.core.rmem_max=134217728 \
+  --sysctl net.core.wmem_max=134217728 \
+  -v $PWD:/code graphdb
+```
+
 ## Usage
 A short description of the compiled programs is given below.
 All of them provide detailed usage description on using the `--help` option.
+
+### Available Benchmark Executables
+
+**Circuit Operation Benchmarks:**
+- `benchmarks/add`: Benchmark addition and multiplication gates
+- `benchmarks/mult`: Benchmark multiplication gate performance
+- `benchmarks/equality`: Benchmark equality testing operations
+- `benchmarks/reconstruction`: Benchmark secret reconstruction operations
+
+**Graph Protocol Benchmarks:**
+- `benchmarks/shuffle`: Benchmark shuffle gate operations
+- `benchmarks/compaction`: Benchmark compaction operations (single-threaded)
+- `benchmarks/compaction_parallel`: Benchmark compaction operations (parallel)
+- `benchmarks/groupindex`: Benchmark group-wise indexing (single-threaded)
+- `benchmarks/groupindex_parallel`: Benchmark group-wise indexing (parallel)
+- `benchmarks/grouppropagate`: Benchmark group-wise propagation (single-threaded)
+- `benchmarks/grouppropagate_parallel`: Benchmark group-wise propagation (parallel)
+
+**Network Benchmarks:**
+- `benchmarks/vector_reconstruction`: Benchmark vector creation and reconstruction using direct network send/recv
+
+### Running Benchmarks
+
+Execute the following commands from the `build` directory created during compilation to run the programs:
+
+```sh
+# Example: Run compaction benchmark with 2 parties on localhost
+# Run this command in separate terminals for each party (pid 1 and 2)
+
+# Party 1
+./benchmarks/compaction -p 1 -n 2 --localhost -l 0.5 -v 100000 --num-payloads 1
+
+# Party 2 (in another terminal)
+./benchmarks/compaction -p 2 -n 2 --localhost -l 0.5 -v 100000 --num-payloads 1
+```
+
+**Common Options:**
+- `-p, --pid`: Party ID (required, starts from 1)
+- `-n, --num-parties`: Number of parties (required)
+- `-v, --vec-size`: Size of input vectors
+- `-l, --latency`: Network latency in milliseconds
+- `-t, --threads`: Number of threads (default: 6)
+- `--localhost`: Run all parties on localhost
+- `--net-config`: Path to JSON file with network configuration (alternative to --localhost)
+- `-o, --output`: File to save benchmark results
+- `--help`: Show detailed help message
+
+**Network Configuration File Format (net_config.json):**
+```json
+[
+  "192.168.1.1",
+  "192.168.1.2",
+  "192.168.1.3"
+]
+```
+The array should contain IP addresses for party 0 (king party), party 1, party 2, etc.
+
+### Example Benchmark Runs
+
+```sh
+# Vector reconstruction with 1 million elements
+./benchmarks/vector_reconstruction -p 1 -n 2 --localhost -l 0.5 -v 1000000
+
+# Parallel compaction with 100k elements and 5 payload vectors
+./benchmarks/compaction_parallel -p 1 -n 2 --localhost -l 0.5 -v 100000 --num-payloads 5
+
+# Group-wise propagation with output saved to file
+./benchmarks/grouppropagate_parallel -p 1 -n 2 --localhost -l 0.5 -v 50000 -o results.json
+```
+
+### Legacy Benchmarks
 
 - `benchmarks/e2e_emgraph`: Benchmark the performance of the end to end emgraph protocol with initialization, preprocessing and online phases.
 - `benchmarks/initialization_emgraph`: Benchmark the performance of the initialization phase of the emgraph protocol.
 - `benchmarks/initialization_graphiti`: Benchmark the performance of the initialization phase of the graphiti protocol.
 - `benchmarks/mpa_emgraph`: Benchmark the performance of the preprocessing and online phases of 1 round of message passing for emgraph.
 - `benchmarks/mpa_graphiti`: Benchmark the performance of the preprocessing and online phases of 1 round of message passing for graphiti.
+
 Execute the following commands from the `build` directory created during compilation to run the programs:
 ```sh
 # Benchmark EmGraph MPA.

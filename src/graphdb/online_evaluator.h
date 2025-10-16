@@ -6,6 +6,7 @@
 
 #include "../io/netmp.h"
 #include "../utils/circuit.h"
+#include "../utils/thread_pool.h"
 #include "preproc.h"
 #include "rand_gen_pool.h"
 #include "sharing.h"
@@ -24,7 +25,7 @@ namespace graphdb {
     PreprocCircuit<Ring> preproc_;
     common::utils::LevelOrderedCircuit circ_;
     std::vector<Ring> wires_;
-    std::shared_ptr<ThreadPool> tpool_;
+    std::shared_ptr<common::utils::ThreadPool> tpool_;
 
     // Helper function to reconstruct shares via king party or direct all-to-all
     static void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
@@ -41,7 +42,7 @@ namespace graphdb {
     OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
                     PreprocCircuit<Ring> preproc,
                     common::utils::LevelOrderedCircuit circ,
-                    std::shared_ptr<ThreadPool> tpool, int seed = 200, int latency = 100, bool use_pking = true);
+                    std::shared_ptr<common::utils::ThreadPool> tpool, int seed = 200, int latency = 100, bool use_pking = true);
 
     void setInputs(const std::unordered_map<common::utils::wire_t, Ring> &inputs);
 
