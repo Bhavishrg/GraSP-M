@@ -173,3 +173,129 @@ int64_t peakVirtualMemory() { return -1; }
 
 int64_t peakResidentSetSize() { return -1; }
 #endif
+
+// Sub-circuit building functions
+
+std::vector<common::utils::wire_t> addSubCircPropagate(
+    common::utils::Circuit<common::utils::Ring>& circ,
+    const std::vector<common::utils::wire_t>& position_map_shares,
+    const std::vector<common::utils::wire_t>& data_values,
+    size_t num_groups,
+    std::vector<std::vector<int>> permutation) {
+    
+    size_t vec_size = position_map_shares.size();
+    
+    // Validate num_groups < vec_size
+    if (num_groups >= vec_size) {
+        throw std::invalid_argument("num_groups must be less than vec_size");
+    }
+    
+    // Step 1: Compute differences for group boundaries
+    // data_values'[0] = data_values[0]
+    // data_values'[i] = data_values[i] - data_values[i-1] for i = 1 to num_groups-1
+    // data_values'[i] = 0 for i >= num_groups
+    std::vector<common::utils::wire_t> data_values_diff(vec_size);
+    
+    for (size_t i = 0; i < vec_size; ++i) {
+        if (i == 0) {
+            // data_values'[0] = data_values[0]
+            data_values_diff[i] = data_values[i];
+        } else if (i < num_groups) {
+            // For i from 1 to num_groups-1: compute differences
+            // data_values'[i] = data_values[i] - data_values[i-1]
+            data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values[i], data_values[i - 1]);
+        } else {
+            // For i >= num_groups: set to 0
+            // data_values'[i] = 0
+            data_values_diff[i] = 0;
+        }
+    }
+
+    // Step 2: Shuffle both position_map and data_values'
+
+    auto shuffled_position_map = circ.addMGate(common::utils::GateType::kShuffle, position_map_shares, permutation);
+    auto shuffled_data_values = circ.addMGate(common::utils::GateType::kShuffle, data_values_diff, permutation);
+
+    // Step 3: Reconstruct position map
+    std::vector<common::utils::wire_t> position_map_reconstructed(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        position_map_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, shuffled_position_map[i]);
+    }
+
+    // Step 4: Rewire shuffled data_values using reconstructed position map
+    std::vector<std::vector<common::utils::wire_t>> payloads = {shuffled_data_values};
+    auto rewired_outputs = circ.addRewireGate(position_map_reconstructed, payloads);
+    auto reordered_data = rewired_outputs[0];
+
+    // Step 5: Compute prefix sum of reordered data
+    std::vector<common::utils::wire_t> prefix_sum(vec_size);
+    prefix_sum[0] = reordered_data[0];
+    for (size_t i = 1; i < vec_size; ++i) {
+        prefix_sum[i] = circ.addGate(common::utils::GateType::kAdd, prefix_sum[i - 1], reordered_data[i]);
+    }
+
+    return prefix_sum;
+}
+
+std::vector<common::utils::wire_t> addSubCircGather(
+    common::utils::Circuit<common::utils::Ring>& circ,
+    const std::vector<common::utils::wire_t>& position_map_shares,
+    const std::vector<common::utils::wire_t>& data_values,
+    size_t num_groups,
+    std::vector<std::vector<int>> permutation) {
+    
+    size_t vec_size = position_map_shares.size();
+    
+    // Validate num_groups < vec_size
+    if (num_groups >= vec_size) {
+        throw std::invalid_argument("num_groups must be less than vec_size");
+    }
+
+    // Step 1: Compute prefix sum of data values
+    std::vector<common::utils::wire_t> prefix_sum(vec_size);
+    prefix_sum[0] = data_values[0];
+    for (size_t i = 1; i < vec_size; ++i) {
+        prefix_sum[i] = circ.addGate(common::utils::GateType::kAdd, prefix_sum[i - 1], data_values[i]);
+    }
+
+    // Step 2: Shuffle both position_map and prefix_sum
+
+    auto shuffled_position_map = circ.addMGate(common::utils::GateType::kShuffle, position_map_shares, permutation);
+    auto shuffled_prefix_sum = circ.addMGate(common::utils::GateType::kShuffle, prefix_sum, permutation);
+
+    // Step 3: Reconstruct position map
+    std::vector<common::utils::wire_t> position_map_reconstructed(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        position_map_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, shuffled_position_map[i]);
+    }
+
+    // Step 4: Rewire shuffled prefix_sum using reconstructed position map
+    std::vector<std::vector<common::utils::wire_t>> payloads = {shuffled_prefix_sum, data_values};
+    auto rewired_outputs = circ.addRewireGate(position_map_reconstructed, payloads);
+    auto reordered_data = rewired_outputs[0];
+    auto rewired_data_values = rewired_outputs[1];
+
+    // Step 5: Compute differences
+    // data_values'[0] = reordered_data[0] - data_values[0]
+    // data_values'[i] = reordered_data[i] - reordered_data[i-1] - data_values[i] for i = 1 to num_groups-1
+    // data_values'[i] = 0 for i >= num_groups
+    std::vector<common::utils::wire_t> data_values_diff(vec_size);
+    
+    for (size_t i = 0; i < vec_size; ++i) {
+        if (i == 0) {
+            // data_values'[0] = reordered_data[0] - data_values[0]
+            data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, reordered_data[i], rewired_data_values[i]);
+        } else if (i < num_groups) {
+            // For i from 1 to num_groups-1: compute differences
+            // data_values'[i] = reordered_data[i] - reordered_data[i-1] - data_values[i]
+            data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, reordered_data[i], reordered_data[i - 1]);
+            data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values_diff[i], rewired_data_values[i]);
+        } else {
+            // For i >= num_groups: set to 0
+            // data_values'[i] = 0
+            data_values_diff[i] = 0;
+        }
+    }
+
+    return data_values_diff;
+}

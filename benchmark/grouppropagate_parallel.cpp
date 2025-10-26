@@ -428,7 +428,7 @@ bpo::options_description programOptions() {
         ("t2a-size", bpo::value<size_t>()->required(), "Size of T2 list for Gate 1 (grouped list).")
         ("t1b-size", bpo::value<size_t>()->required(), "Size of T1 list for Gate 2 (key-value pairs).")
         ("t2b-size", bpo::value<size_t>()->required(), "Size of T2 list for Gate 2 (grouped list).")
-        ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
+        ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
         ("seed", bpo::value<size_t>()->default_value(200), "Value of the random seed.")

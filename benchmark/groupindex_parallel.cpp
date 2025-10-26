@@ -351,7 +351,7 @@ bpo::options_description programOptions() {
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
         ("vec-size1", bpo::value<size_t>()->required(), "Size of first groupwise index gate.")
         ("vec-size2", bpo::value<size_t>()->required(), "Size of second groupwise index gate.")
-        ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
+        ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads.")
         ("seed", bpo::value<size_t>()->default_value(200), "Random seed.")

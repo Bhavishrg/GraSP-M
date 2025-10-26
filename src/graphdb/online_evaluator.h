@@ -80,6 +80,8 @@ namespace graphdb {
 
     void sortEvaluate(const std::vector<common::utils::SIMDOGate> &sort_gates);
 
+    void rewireEvaluate(const std::vector<common::utils::SIMDOGate> &rewire_gates);
+
     std::vector<Ring> getOutputs();
 
     Ring reconstruct(AddShare<Ring> &shares);

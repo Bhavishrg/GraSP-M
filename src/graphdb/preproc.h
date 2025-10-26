@@ -254,7 +254,7 @@ struct PreprocGroupwisePropagateGate : public PreprocGate<R> {
 
 // Preprocessing for Sort gate
 // Contains 32 compaction operations (one for each bit from MSB to LSB)
-// Plus final shuffle for hiding the permutation
+// Plus final shuffle for hiding the permutation before reconstruction
 template <class R>
 struct PreprocSortGate : public PreprocGate<R> {
   // Array of 32 compaction preprocessing structures (one per bit)
@@ -289,6 +289,27 @@ struct PreprocSortGate : public PreprocGate<R> {
   std::vector<std::vector<int>> final_shuffle_tp_pi_all;
   
   PreprocSortGate() = default;
+};
+
+// Preprocessing for Rewire gate
+// Rewires gates based on a position map (provided as a public permutation)
+// Takes a position map vector and any number of payload vectors as input
+// Outputs permuted payload wires based on the position map
+// 
+// Gate behavior (similar to lines 678-690 in compactEvaluate):
+//   Apply public permutation to all payload vectors based on the position map
+//   For each position i: if position_map[i] = idx_perm, then output[idx_perm] = payload[i]
+//
+// This gate requires:
+//   - No preprocessing needed (permutation is public)
+template <class R>
+struct PreprocRewireGate : public PreprocGate<R> {
+  size_t vec_size;       // Size of position map and each payload vector
+  size_t num_payloads;   // Number of payload vectors
+  
+  PreprocRewireGate() = default;
+  PreprocRewireGate(size_t vec_size, size_t num_payloads)
+      : PreprocGate<R>(), vec_size(vec_size), num_payloads(num_payloads) {}
 };
 
 // Preprocessed data for the circuit.

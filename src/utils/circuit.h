@@ -35,6 +35,7 @@ enum GateType {
   kGroupwiseIndex,
   kGroupwisePropagate,
   kSort,
+  kRewire,
   kInvalid,
   NumGates
 };
@@ -111,9 +112,10 @@ struct SIMDGate : public Gate {
 struct SIMDOGate : public Gate {
   std::vector<wire_t> in{0};
   std::vector<std::vector<int>> permutation{0};
+  size_t vec_size{0};  // Metadata: size of vector for SIMD operations
 
   SIMDOGate() = default;
-  SIMDOGate(GateType type, int owner, std::vector<wire_t> in, std::vector<wire_t> out, std::vector<std::vector<int>> permutation);
+  SIMDOGate(GateType type, int owner, std::vector<wire_t> in, std::vector<wire_t> out, std::vector<std::vector<int>> permutation, size_t vec_size = 0);
 };
 
 // Represents a gate used to denote SIMD operations.
@@ -530,6 +532,82 @@ class Circuit {
     return sorted_output;
   }
 
+  // Add a Rewire gate that applies a public permutation based on a position map
+  // Takes a position map vector and any number of payload vectors as input
+  // Outputs permuted payload wires based on the position map
+  // 
+  // Gate behavior (similar to lines 678-690 in compactEvaluate):
+  //   For each position i: if position_map[i] = idx_perm, then output[idx_perm] = payload[i]
+  //
+  // Input format: [pos_map_0, ..., pos_map_n, p1_0, ..., p1_n, p2_0, ..., p2_n, ...]
+  // Output format: [p1_out_0, ..., p1_out_n, p2_out_0, ..., p2_out_n, ...]
+  std::vector<std::vector<wire_t>> addRewireGate(
+      const std::vector<wire_t>& position_map,
+      const std::vector<std::vector<wire_t>>& payload_vectors) {
+    
+    size_t vec_size = position_map.size();
+    size_t num_payloads = payload_vectors.size();
+    
+    if (num_payloads == 0) {
+      throw std::invalid_argument("At least one payload vector is required.");
+    }
+    
+    // Validate all payload vectors have same size as position_map
+    for (size_t p = 0; p < num_payloads; ++p) {
+      if (payload_vectors[p].size() != vec_size) {
+        throw std::invalid_argument("All payload vectors must have the same size as position_map.");
+      }
+    }
+    
+    // Validate input wires
+    for (size_t i = 0; i < vec_size; i++) {
+      if (!isWireValid(position_map[i])) {
+        throw std::invalid_argument("Invalid wire ID in position_map.");
+      }
+      for (size_t p = 0; p < num_payloads; ++p) {
+        if (!isWireValid(payload_vectors[p][i])) {
+          throw std::invalid_argument("Invalid wire ID in payload vector.");
+        }
+      }
+    }
+    
+    // Create output wires: vec_size for each payload
+    std::vector<std::vector<wire_t>> payload_outputs(num_payloads, std::vector<wire_t>(vec_size));
+    
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        payload_outputs[p][i] = num_wires + vec_size * p + i;
+      }
+    }
+    
+    // Create input vector [pos_map_0, ..., pos_map_n, p1_0, ..., p1_n, p2_0, ...]
+    std::vector<wire_t> input((1 + num_payloads) * vec_size);
+    for (size_t i = 0; i < vec_size; i++) {
+      input[i] = position_map[i];
+    }
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        input[vec_size * (p + 1) + i] = payload_vectors[p][i];
+      }
+    }
+    
+    // Create output vector for the gate
+    std::vector<wire_t> output(num_payloads * vec_size);
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        output[vec_size * p + i] = payload_outputs[p][i];
+      }
+    }
+    
+    // Empty permutation vector since the permutation is determined at runtime from position_map
+    std::vector<std::vector<int>> empty_permutation;
+    // Pass vec_size as metadata to the gate constructor
+    gates_.push_back(std::make_shared<SIMDOGate>(GateType::kRewire, 0, input, output, empty_permutation, vec_size));
+    num_wires += num_payloads * vec_size;
+    
+    return payload_outputs;
+  }
+
 
 
 
@@ -666,6 +744,19 @@ class Circuit {
           break;
         }
 
+        case GateType::kRewire: {
+          const auto* g = static_cast<SIMDOGate*>(gate.get());
+          size_t gate_depth = 0;
+          for (size_t i = 0; i < g->in.size(); i++) {
+            gate_depth = std::max({gate_level[g->in[i]], gate_depth});
+          }
+          for (int i = 0; i < g->outs.size(); i++) {
+            gate_level[g->outs[i]] = gate_depth;
+          }
+          depth = std::max(depth, gate_level[gate->outs[0]]);
+          break;
+        }
+
         default:
           break;
       }
@@ -676,7 +767,7 @@ class Circuit {
     std::vector<std::vector<gate_ptr_t>> gates_by_level(depth + 1);
     for (const auto& gate : gates_) {
       res.count[gate->type]++;
-      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kGroupwiseIndex || gate->type == GateType::kGroupwisePropagate || gate->type == GateType::kSort) {
+      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kGroupwiseIndex || gate->type == GateType::kGroupwisePropagate || gate->type == GateType::kSort || gate->type == GateType::kRewire) {
         gates_by_level[gate_level[gate->outs[0]]].push_back(gate);
       } else {
         gates_by_level[gate_level[gate->out]].push_back(gate);

@@ -3092,6 +3092,83 @@ namespace graphdb
         }
     }
 
+    void OnlineEvaluator::rewireEvaluate(const std::vector<common::utils::SIMDOGate> &rewire_gates) {
+        if (id_ == 0) { return; }
+        if (rewire_gates.empty()) { return; }
+
+        size_t num_gates = rewire_gates.size();
+        
+        // Extract metadata and prepare data structures for all gates in parallel
+        std::vector<size_t> vec_sizes(num_gates);
+        std::vector<size_t> num_payloads_vec(num_gates);
+        std::vector<std::vector<Ring>> all_position_maps(num_gates);
+        std::vector<std::vector<std::vector<Ring>>> all_payload_shares(num_gates);
+        
+        #pragma omp parallel for
+        for (size_t g = 0; g < num_gates; ++g) {
+            const auto& rewire_gate = rewire_gates[g];
+            
+            // Input format: [pos_map_0, ..., pos_map_n, p1_0, ..., p1_n, p2_0, ..., p2_n, ...]
+            // Output format: [p1_out_0, ..., p1_out_n, p2_out_0, ..., p2_out_n, ...]
+            // Note: position_map wires already hold reconstructed values (public)
+            
+            // Get vec_size and num_payloads from preprocessing
+            auto* preproc_rewire = static_cast<PreprocRewireGate<Ring>*>(preproc_.gates[rewire_gate.out].get());
+            size_t vec_size = preproc_rewire->vec_size;
+            size_t num_payloads = preproc_rewire->num_payloads;
+            
+            vec_sizes[g] = vec_size;
+            num_payloads_vec[g] = num_payloads;
+            
+            // Extract position_map values (already reconstructed/public)
+            all_position_maps[g].resize(vec_size);
+            for (size_t i = 0; i < vec_size; ++i) {
+                all_position_maps[g][i] = wires_[rewire_gate.in[i]];
+            }
+            
+            // Extract payload shares
+            all_payload_shares[g].resize(num_payloads, std::vector<Ring>(vec_size));
+            for (size_t p = 0; p < num_payloads; ++p) {
+                for (size_t i = 0; i < vec_size; ++i) {
+                    all_payload_shares[g][p][i] = wires_[rewire_gate.in[vec_size * (p + 1) + i]];
+                }
+            }
+        }
+        
+        // Apply permutations for all gates in parallel
+        std::vector<std::vector<std::unordered_map<common::utils::wire_t, Ring>>> all_temp_outputs(num_gates);
+        
+        #pragma omp parallel for
+        for (size_t g = 0; g < num_gates; ++g) {
+            const auto& rewire_gate = rewire_gates[g];
+            size_t vec_size = vec_sizes[g];
+            size_t num_payloads = num_payloads_vec[g];
+            
+            all_temp_outputs[g].resize(num_payloads);
+            
+            // Apply public permutation based on position_map
+            // For each position i: if position_map[i] = idx_perm, then output[idx_perm] = payload[i]
+            for (size_t i = 0; i < vec_size; ++i) {
+                int idx_perm = static_cast<int>(all_position_maps[g][i]);
+                if (idx_perm >= 0 && idx_perm < vec_size) {
+                    for (size_t p = 0; p < num_payloads; ++p) {
+                        all_temp_outputs[g][p][rewire_gate.outs[vec_size * p + idx_perm]] = all_payload_shares[g][p][i];
+                    }
+                }
+            }
+        }
+        
+        // Write outputs to wires (sequential to avoid race conditions)
+        for (size_t g = 0; g < num_gates; ++g) {
+            size_t num_payloads = num_payloads_vec[g];
+            for (size_t p = 0; p < num_payloads; ++p) {
+                for (const auto& [wire_id, value] : all_temp_outputs[g][p]) {
+                    wires_[wire_id] = value;
+                }
+            }
+        }
+    }
+
     void OnlineEvaluator::evaluateGatesAtDepth(size_t depth) {
         if (id_ == 0) { return; }
 
@@ -3104,6 +3181,7 @@ namespace graphdb
         std::vector<common::utils::SIMDOGate> gi_gates;
         std::vector<common::utils::SIMDOGate> gp_gates;
         std::vector<common::utils::SIMDOGate> sort_gates;
+        std::vector<common::utils::SIMDOGate> rewire_gates;
 
         // First pass: collect the multi-round gates so their batched handlers can run once.
         for (auto &gate : circ_.gates_by_level[depth]) {
@@ -3160,6 +3238,12 @@ namespace graphdb
                     sort_gates.push_back(*g);
                     break;
                 }
+                case common::utils::GateType::kRewire: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    // Rewire gates are processed immediately
+                    rewire_gates.push_back(*g);
+                    break;
+                }
                 default:
                     break;
             }
@@ -3174,6 +3258,7 @@ namespace graphdb
         if (!gi_gates.empty()) { groupwiseIndexEvaluateParallel(gi_gates); }
         // if (!gp_gates.empty()) { groupwisePropagateEvaluateParallel(gp_gates); }
         if (!sort_gates.empty()) { sortEvaluate(sort_gates); }
+        if (!rewire_gates.empty()) { rewireEvaluate(rewire_gates); }
         
         // Second pass: handle locally evaluable gates.
         for (auto &gate : circ_.gates_by_level[depth]) {

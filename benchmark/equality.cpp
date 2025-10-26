@@ -204,7 +204,7 @@ bpo::options_description programOptions() {
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
         ("input,i", bpo::value<int>()->required(), "Input value for equality check.")
-        ("latency,l", bpo::value<double>()->required(), "Network latency in ms.")
+        ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
         ("seed", bpo::value<size_t>()->default_value(200), "Value of the random seed.")

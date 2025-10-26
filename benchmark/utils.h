@@ -1,6 +1,7 @@
 #pragma once
 
 #include <io/netmp.h>
+#include <utils/circuit.h>
 
 #include <array>
 #include <chrono>
@@ -38,3 +39,18 @@ int64_t peakVirtualMemory();
 int64_t peakResidentSetSize();
 void initNTL(size_t num_threads);
 void increaseSocketBuffers(io::NetIOMP* network, int buffer_size);
+
+// Sub-circuit building functions
+std::vector<common::utils::wire_t> addSubCircPropagate(
+    common::utils::Circuit<common::utils::Ring>& circ,
+    const std::vector<common::utils::wire_t>& position_map_shares,
+    const std::vector<common::utils::wire_t>& data_values,
+    size_t num_groups,
+    std::vector<std::vector<int>> permutation);
+
+std::vector<common::utils::wire_t> addSubCircGather(
+    common::utils::Circuit<common::utils::Ring>& circ,
+    const std::vector<common::utils::wire_t>& position_map_shares,
+    const std::vector<common::utils::wire_t>& data_values,
+    size_t num_groups,
+    std::vector<std::vector<int>> permutation);
