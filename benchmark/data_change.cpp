@@ -238,6 +238,9 @@ void benchmark(const bpo::variables_map& opts) {
     
     std::cout << "Setting inputs for party " << pid << std::endl;
     
+    // Set seed for reproducible random inputs
+    srand(seed + pid);
+    
     // First vec_size wires are for graph
     // Next vec_size wires indicate update (binary)
     // Next vec_size wires are updated data
@@ -284,6 +287,44 @@ void benchmark(const bpo::variables_map& opts) {
     auto outputs = eval.getOutputs();
     network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
+
+    // Print example inputs and outputs
+    if (pid == 1) {  // Only print from party 1 to avoid duplicate output
+        std::cout << "\n=== EXAMPLE INPUTS AND OUTPUTS ===" << std::endl;
+        std::cout << "\n--- Graph Data (first 10 vertices/edges) ---" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(10), graph_input_values.size()); ++i) {
+            std::cout << "Element[" << i << "]: " << graph_input_values[i] << std::endl;
+        }
+        
+        std::cout << "\n--- Update Indicators (first 10) ---" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(10), indicator_input_values.size()); ++i) {
+            std::cout << "Indicator[" << i << "]: " << indicator_input_values[i] 
+                      << (indicator_input_values[i] == 1 ? " (UPDATE)" : " (NO CHANGE)") << std::endl;
+        }
+        
+        std::cout << "\n--- New Data Values (first 10) ---" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(10), update_input_values.size()); ++i) {
+            std::cout << "NewData[" << i << "]: " << update_input_values[i] << std::endl;
+        }
+        
+        std::cout << "\n--- Updated Outputs (first 10) ---" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(10), outputs.size()); ++i) {
+            std::cout << "Output[" << i << "]: " << outputs[i] << std::endl;
+        }
+        
+        std::cout << "\n--- Verification (first 5 elements) ---" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(5), std::min(graph_input_values.size(), outputs.size())); ++i) {
+            Ring expected = graph_input_values[i] + 
+                           indicator_input_values[i] * (update_input_values[i] - graph_input_values[i]);
+            std::cout << "Element[" << i << "]: Original=" << graph_input_values[i] 
+                      << ", Indicator=" << indicator_input_values[i]
+                      << ", NewData=" << update_input_values[i]
+                      << ", Expected=" << expected
+                      << ", Actual=" << outputs[i]
+                      << (expected == outputs[i] ? " ✓" : " ✗") << std::endl;
+        }
+        std::cout << "===================================\n" << std::endl;
+    }
 
     StatsPoint end(*network);
 

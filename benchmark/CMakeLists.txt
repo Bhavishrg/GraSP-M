@@ -24,6 +24,7 @@ add_benchmark(sort)
 add_benchmark(rewire)
 add_benchmark(propagate)
 add_benchmark(gather)
+add_benchmark(data_change)
 
 add_custom_target(benchmarks)
 add_dependencies(benchmarks ${benchbin})
