@@ -176,6 +176,47 @@ int64_t peakResidentSetSize() { return -1; }
 
 // Sub-circuit building functions
 
+// Shuffle a position map and a list of payload vectors, reconstruct the
+// position map and rewire the shuffled payloads according to the
+// reconstructed map. Returns the rewired payload vectors in the same
+// order as the input payloads.
+std::vector<std::vector<common::utils::wire_t>> addSubCircPermList(
+    common::utils::Circuit<common::utils::Ring>& circ,
+    const std::vector<common::utils::wire_t>& position_map_shares,
+    const std::vector<std::vector<common::utils::wire_t>>& payloads,
+    std::vector<std::vector<int>> permutation) {
+
+    size_t vec_size = position_map_shares.size();
+
+    // Validate payload sizes (each payload must match position map length)
+    for (size_t p = 0; p < payloads.size(); ++p) {
+        if (payloads[p].size() != vec_size) {
+            throw std::invalid_argument("All payload vectors must have the same size as position_map_shares");
+        }
+    }
+
+    // Shuffle position map
+    auto shuffled_position_map = circ.addMGate(common::utils::GateType::kShuffle, position_map_shares, permutation);
+
+    // Shuffle each payload vector
+    std::vector<std::vector<common::utils::wire_t>> shuffled_payloads;
+    shuffled_payloads.reserve(payloads.size());
+    for (const auto& pl : payloads) {
+        shuffled_payloads.push_back(circ.addMGate(common::utils::GateType::kShuffle, pl, permutation));
+    }
+
+    // Reconstruct position map
+    std::vector<common::utils::wire_t> position_map_reconstructed(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        position_map_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, shuffled_position_map[i]);
+    }
+
+    // Rewire shuffled payloads using reconstructed position map
+    auto rewired_outputs = circ.addRewireGate(position_map_reconstructed, shuffled_payloads);
+
+    return rewired_outputs;
+}
+
 std::vector<common::utils::wire_t> addSubCircPropagate(
     common::utils::Circuit<common::utils::Ring>& circ,
     const std::vector<common::utils::wire_t>& position_map_shares,
@@ -211,20 +252,9 @@ std::vector<common::utils::wire_t> addSubCircPropagate(
         }
     }
 
-    // Step 2: Shuffle both position_map and data_values'
-
-    auto shuffled_position_map = circ.addMGate(common::utils::GateType::kShuffle, position_map_shares, permutation);
-    auto shuffled_data_values = circ.addMGate(common::utils::GateType::kShuffle, data_values_diff, permutation);
-
-    // Step 3: Reconstruct position map
-    std::vector<common::utils::wire_t> position_map_reconstructed(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        position_map_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, shuffled_position_map[i]);
-    }
-
-    // Step 4: Rewire shuffled data_values using reconstructed position map
-    std::vector<std::vector<common::utils::wire_t>> payloads = {shuffled_data_values};
-    auto rewired_outputs = circ.addRewireGate(position_map_reconstructed, payloads);
+    // Step 2-4: Shuffle, reconstruct, and rewire using addSubCircPermList
+    std::vector<std::vector<common::utils::wire_t>> payloads = {data_values_diff};
+    auto rewired_outputs = addSubCircPermList(circ, position_map_shares, payloads, permutation);
     auto reordered_data = rewired_outputs[0];
 
     // Step 5: Compute prefix sum of reordered data
@@ -258,20 +288,9 @@ std::vector<common::utils::wire_t> addSubCircGather(
         prefix_sum[i] = circ.addGate(common::utils::GateType::kAdd, prefix_sum[i - 1], data_values[i]);
     }
 
-    // Step 2: Shuffle both position_map and prefix_sum
-
-    auto shuffled_position_map = circ.addMGate(common::utils::GateType::kShuffle, position_map_shares, permutation);
-    auto shuffled_prefix_sum = circ.addMGate(common::utils::GateType::kShuffle, prefix_sum, permutation);
-
-    // Step 3: Reconstruct position map
-    std::vector<common::utils::wire_t> position_map_reconstructed(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        position_map_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, shuffled_position_map[i]);
-    }
-
-    // Step 4: Rewire shuffled prefix_sum using reconstructed position map
-    std::vector<std::vector<common::utils::wire_t>> payloads = {shuffled_prefix_sum, data_values};
-    auto rewired_outputs = circ.addRewireGate(position_map_reconstructed, payloads);
+    // Step 2-4: Shuffle, reconstruct, and rewire using addSubCircPermList
+    std::vector<std::vector<common::utils::wire_t>> payloads = {prefix_sum, data_values};
+    auto rewired_outputs = addSubCircPermList(circ, position_map_shares, payloads, permutation);
     auto reordered_data = rewired_outputs[0];
     auto rewired_data_values = rewired_outputs[1];
 
@@ -299,3 +318,5 @@ std::vector<common::utils::wire_t> addSubCircGather(
 
     return data_values_diff;
 }
+
+
