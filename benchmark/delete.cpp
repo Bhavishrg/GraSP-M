@@ -16,7 +16,7 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
+common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, size_t del_v_size, size_t del_e_size) {
 
     std::cout << "Generating circuit" << std::endl;
     
@@ -82,18 +82,18 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
     std::vector<size_t> del_num_edges(nP);
     for (int i = 0; i < nP; ++i) {
         if (i != nP - 1) {
-            add_num_edges[i] = del_e_size / nP;
+            del_num_edges[i] = del_e_size / nP;
         } else {
-            add_num_edges[i] = del_e_size / nP + del_e_size % nP;
+            del_num_edges[i] = del_e_size / nP + del_e_size % nP;
         }
     }
 
     std::vector<size_t> del_num_vert(nP);
     for (int i = 0; i < nP; ++i) {
         if (i != nP - 1) {
-            add_num_edges[i] = del_v_size / nP;
+            del_num_vert[i] = del_v_size / nP;
         } else {
-            add_num_edges[i] = del_v_size / nP + del_v_size % nP;
+            del_num_vert[i] = del_v_size / nP + del_v_size % nP;
         }
     }
 
@@ -119,8 +119,8 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
 
     // Generate permutation for shuffle
     // Here we just pass identity permutations
-    std::vector<int> base_perm(num_vert);
-    for (size_t i = 0; i < num_vert; ++i) {
+    std::vector<int> base_perm(num_vert + num_edge);
+    for (size_t i = 0; i < num_vert + num_edge; ++i) {
         base_perm[i] = static_cast<int>(i);
     }
     std::vector<std::vector<int>> permutation;
@@ -147,13 +147,15 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
         }
     }
 
-    // Flatten position maps
+    // Flatten G
+    std::vector<wire_t> graph_data(num_vert + num_edge);
     std::vector<wire_t> pos_V(num_vert + num_edge);
     std::vector<wire_t> pos_S(num_vert + num_edge);
     std::vector<wire_t> pos_D(num_vert + num_edge);
-    int index = 0;
+    index = 0;
     for (size_t i = 0; i < nP; ++i) {
         for (size_t j = 0; j < subg_num_vert[i]; ++j) {
+            graph_data[index] = subg_vertex_list[i][j];
             pos_V[index] = subg_vertex_pos_V[i][j];
             pos_S[index] = subg_vertex_pos_S[i][j];
             pos_D[index] = subg_vertex_pos_D[i][j];
@@ -162,6 +164,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
     }
     for (size_t i = 0; i < nP; ++i) {
         for (size_t j = 0; j < subg_num_edge[i]; ++j) {
+            graph_data[index] = subg_edge_list[i][j];
             pos_V[index] = subg_edge_pos_V[i][j];
             pos_S[index] = subg_edge_pos_S[i][j];
             pos_D[index] = subg_edge_pos_D[i][j];
@@ -176,37 +179,76 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
     // Combine del tags
     std::vector<wire_t> del_final(num_vert + num_edge);
     for (size_t i = 0; i < num_vert + num_edge; ++i) {
-        auto temp = circ.addGate(common::utils::GateType::kAdd, pos_S[i], pos_D[i]);
-        temp = circ.addGate(common::utils::GateType::kAdd, del[i], del_SD[i]);
+        auto temp = circ.addGate(common::utils::GateType::kAdd, del_S[i], del_D[i]);
+        temp = circ.addGate(common::utils::GateType::kAdd, del[i], temp);
         temp = circ.addGate(common::utils::GateType::kEqz, temp);
         temp = circ.addConstOpGate(common::utils::GateType::kConstMul, temp, Ring(-1));
         del_final[i] = circ.addConstOpGate(common::utils::GateType::kConstAdd, temp, Ring(1));
     }
 
-    // Update position maps
-    std::vector<wire_t> updated_pos_V(num_vert + num_edge);
-    std::vector<wire_t> updated_pos_S(num_vert + num_edge);
-    std::vector<wire_t> updated_pos_D(num_vert + num_edge);
+    // Update pos_V
+    std::vector<wire_t> updated_pos_V(vec_size);
+    updated_pos_V[0] = pos_V[0];
     wire_t prefix_sum = del_final[0];
-    for (size_t i = 1; i < num_vert + num_edge; ++i) {
+    for (size_t i = 1; i < vec_size; ++i) {
         updated_pos_V[i] = circ.addGate(common::utils::GateType::kSub, pos_V[i], prefix_sum);
-        updated_pos_S[i] = circ.addGate(common::utils::GateType::kSub, pos_S[i], prefix_sum);
-        updated_pos_D[i] = circ.addGate(common::utils::GateType::kSub, pos_D[i], prefix_sum);
         prefix_sum = circ.addGate(common::utils::GateType::kAdd, prefix_sum, del_final[i]);
     }
+
+    // Combine graph vectors into single payload
+    std::vector<std::vector<wire_t>> payload;
+    payload.reserve(5);
+    payload.push_back(graph_data);       // payload[0]
+    payload.push_back(updated_pos_V);    // payload[1]
+    payload.push_back(pos_S);            // payload[2]
+    payload.push_back(pos_D);            // payload[3]
+    payload.push_back(del_final);        // payload[4]
+
+    // Reorder to source order
+    auto payload_s = addSubCircPermList(circ, payload[2], payload, permutation);
+
+    // Update pos_S
+    std::vector<wire_t> updated_pos_S(vec_size);
+    std::vector<wire_t> pos_S_s = payload_s[2];
+    std::vector<wire_t> del_s = payload_s[4];
+    updated_pos_S[0] = pos_S_s[0];
+    prefix_sum = del_s[0];
+    for (size_t i = 1; i < vec_size; ++i) {
+        updated_pos_S[i] = circ.addGate(common::utils::GateType::kSub, pos_S_s[i], prefix_sum);
+        prefix_sum = circ.addGate(common::utils::GateType::kAdd, prefix_sum, del_s[i]);
+    }
+    payload_s[2] = updated_pos_S; 
+
+    // Reorder to destination order
+    auto payload_d = addSubCircPermList(circ, payload_s[3], payload_s, permutation);
+
+    // Update pos_D
+    std::vector<wire_t> updated_pos_D(vec_size);
+    std::vector<wire_t> pos_D_d = payload_d[3];
+    std::vector<wire_t> del_d = payload_d[4];
+    updated_pos_D[0] = pos_D_d[0];
+    prefix_sum = del_d[0];
+    for (size_t i = 1; i < vec_size; ++i) {
+        updated_pos_D[i] = circ.addGate(common::utils::GateType::kSub, pos_D_d[i], prefix_sum);
+        prefix_sum = circ.addGate(common::utils::GateType::kAdd, prefix_sum, del_d[i]);
+    }
+    payload_d[3] = updated_pos_D; 
     
     // Random Shuffle
-    auto shuffled = circ.addMGate(common::utils::GateType::kShuffle, del_final, permutation);
+    auto shuffled_data = circ.addMGate(common::utils::GateType::kShuffle, payload_d[0], permutation);
+    auto shuffled_pos_V = circ.addMGate(common::utils::GateType::kShuffle, payload_d[1], permutation);
+    auto shuffled_pos_S = circ.addMGate(common::utils::GateType::kShuffle, payload_d[2], permutation);
+    auto shuffled_pos_D = circ.addMGate(common::utils::GateType::kShuffle, payload_d[3], permutation);
+    auto shuffled_del = circ.addMGate(common::utils::GateType::kShuffle, payload_d[4], permutation);
 
-    // Reconstruct del and pos_V
-    std::vector<wire_t> del_rec(num_vert + num_edge);
-    std::vector<wire_t> pos_V_rec(num_vert + num_edge);
-    for (size_t i = 0; i < num_vert + num_edge; ++i){
-        del_rec[i] = circ.addGate(common::utils::GateType::kRec, shuffled[i]);
-        pos_V_rec[i] = circ.addGate(common::utils::GateType::kRec, updated_pos_V[i]);
+    // Set outputs
+    for (size_t i = 0; i < vec_size; ++i) {
+        circ.setAsOutput(shuffled_data[i]);
+        circ.setAsOutput(shuffled_pos_V[i]);
+        circ.setAsOutput(shuffled_pos_S[i]);
+        circ.setAsOutput(shuffled_pos_D[i]);
+        circ.setAsOutput(shuffled_del[i]);
     }
-
-    // Set output?
 
     return circ;
 }
