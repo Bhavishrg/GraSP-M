@@ -54,3 +54,9 @@ std::vector<common::utils::wire_t> addSubCircGather(
     const std::vector<common::utils::wire_t>& data_values,
     size_t num_groups,
     std::vector<std::vector<int>> permutation);
+
+std::vector<std::vector<common::utils::wire_t>> addSubCircPermList(
+    common::utils::Circuit<common::utils::Ring>& circ,
+    const std::vector<common::utils::wire_t>& position_map_shares,
+    const std::vector<std::vector<common::utils::wire_t>>& payloads,
+    std::vector<std::vector<int>> permutation);

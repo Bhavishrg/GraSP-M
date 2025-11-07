@@ -178,6 +178,18 @@ class Circuit {
     return wid;
   }
 
+  // Create a constant value wire
+  // Party 1 will hold the constant value, all other parties will hold 0
+  wire_t newConstWire(R cval, int pid) {
+    wire_t val;
+    if (pid == 1) {
+      val = cval;
+    } else {
+      val = static_cast<R>(0);
+    } 
+    return val;
+  }
+
   void setAsOutput(wire_t wid) {
     if (!isWireValid(wid)) {
       throw std::invalid_argument("Invalid wire ID.");

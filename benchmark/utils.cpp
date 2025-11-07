@@ -295,7 +295,7 @@ std::vector<common::utils::wire_t> addSubCircGather(
     auto rewired_data_values = rewired_outputs[1];
 
     // Step 5: Compute differences
-    // data_values'[0] = reordered_data[0] - data_values[0]
+    // data_values'[0] = reordered_data[0]
     // data_values'[i] = reordered_data[i] - reordered_data[i-1] - data_values[i] for i = 1 to num_groups-1
     // data_values'[i] = 0 for i >= num_groups
     std::vector<common::utils::wire_t> data_values_diff(vec_size);
