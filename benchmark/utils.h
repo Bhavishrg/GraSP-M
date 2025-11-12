@@ -39,6 +39,8 @@ int64_t peakVirtualMemory();
 int64_t peakResidentSetSize();
 void initNTL(size_t num_threads);
 void increaseSocketBuffers(io::NetIOMP* network, int buffer_size);
+std::shared_ptr<io::NetIOMP> createNetwork(int pid, int nP, int latency, int port, 
+                                            bool localhost, const std::string& net_config_path);
 
 // Sub-circuit building functions
 std::vector<common::utils::wire_t> addSubCircPropagate(

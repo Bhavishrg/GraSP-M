@@ -35,28 +35,12 @@ void benchmark(const bpo::variables_map& opts) {
     if (nP < 10) { omp_set_num_threads(nP); }
     else { omp_set_num_threads(10); }
 
-    std::cout << "Starting vector reconstruction benchmarks (direct network send/recv)" << std::endl;
+    std::cout << "Starting benchmarks" << std::endl;
 
-    std::shared_ptr<io::NetIOMP> network = nullptr;
-    if (opts["localhost"].as<bool>()) {
-        network = std::make_shared<io::NetIOMP>(pid, nP, latency, port, nullptr, true);
-    } else {
-        std::ifstream fnet(opts["net-config"].as<std::string>());
-        if (!fnet.good()) {
-            fnet.close();
-            throw std::runtime_error("Could not open network config file");
-        }
-        json netdata;
-        fnet >> netdata;
-        fnet.close();
-        std::vector<std::string> ipaddress(nP);
-        std::vector<char*> ip(nP);
-        for (size_t i = 0; i < nP; ++i) {
-            ipaddress[i] = netdata[i].get<std::string>();
-            ip[i] = ipaddress[i].data();
-        }
-        network = std::make_shared<io::NetIOMP>(pid, nP, latency, port, ip.data(), false);
-    }
+    std::string net_config = opts.count("net-config") ? opts["net-config"].as<std::string>() : "";
+    std::shared_ptr<io::NetIOMP> network = createNetwork(pid, nP, latency, port,
+                                                          opts["localhost"].as<bool>(),
+                                                          net_config);
     
     // Increase socket buffer sizes for large vectors
     // Default Linux buffer is ~200KB, increase to handle large messages

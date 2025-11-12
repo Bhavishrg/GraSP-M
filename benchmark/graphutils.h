@@ -90,7 +90,7 @@ struct Daglist {
 
 // Struct to represent distributed daglist across multiple parties
 struct DistributedDaglist {
-    int num_parties;
+    int num_clients;
     int nV;  // Total number of vertices
     int nE;  // Total number of edges
     vector<vector<DagEntry>> VertexLists;  // VertexLists[i] = vertices owned by party i
@@ -98,21 +98,48 @@ struct DistributedDaglist {
     vector<Ring> VSizes;  // Number of vertices in each VertexList
     vector<Ring> ESizes;  // Number of edges in each EdgeList
     
-    DistributedDaglist() : num_parties(0), nV(0), nE(0) {}
+    // Operation lists for graph modifications
+    vector<vector<DagEntry>> InsertV;  // InsertV[i] = vertices to insert for party i
+    vector<vector<DagEntry>> InsertE;  // InsertE[i] = edges to insert for party i
+    vector<vector<DagEntry>> DeleteV;  // DeleteV[i] = vertices to delete for party i
+    vector<vector<DagEntry>> DeleteE;  // DeleteE[i] = edges to delete for party i
     
-    DistributedDaglist(int np) : num_parties(np), nV(0), nE(0) {
+    vector<vector<Ring>> ChangeV;   // ChangeV[i][j] = data change for j-th vertex of party i
+    vector<vector<Ring>> isChangeV; // ChangeV[i][j] = 1/0 indicating if j-th vertex of party i is changed
+    vector<vector<Ring>> ChangeE;   // ChangeE[i][j] = data change for j-th edge of party i
+    vector<vector<Ring>> isChangeE; // ChangeE[i][j] = 1/0 indicating if j-th edge of party i is changed
+
+    DistributedDaglist() : num_clients(0), nV(0), nE(0) {}
+    
+    DistributedDaglist(int np) : num_clients(np), nV(0), nE(0) {
         VertexLists.resize(np);
         EdgeLists.resize(np);
         VSizes.resize(np, 0);
         ESizes.resize(np, 0);
+        InsertV.resize(np);
+        InsertE.resize(np);
+        DeleteV.resize(np);
+        DeleteE.resize(np);
+        ChangeV.resize(np);
+        ChangeE.resize(np);
+        isChangeV.resize(np);
+        isChangeE.resize(np);
     }
     
     DistributedDaglist(int np, int total_nV, int total_nE) 
-        : num_parties(np), nV(total_nV), nE(total_nE) {
+        : num_clients(np), nV(total_nV), nE(total_nE) {
         VertexLists.resize(np);
         EdgeLists.resize(np);
         VSizes.resize(np, 0);
         ESizes.resize(np, 0);
+        InsertV.resize(np);
+        InsertE.resize(np);
+        DeleteV.resize(np);
+        DeleteE.resize(np);
+        ChangeV.resize(np);
+        ChangeE.resize(np);
+        isChangeV.resize(np);
+        isChangeE.resize(np);
     }
     
     // Get all entries (vertices + edges) for a specific party
@@ -164,7 +191,7 @@ struct SSDaglist {
 
 // Struct to represent distributed daglist with secret-shared wires across multiple parties
 struct SSDistributedDaglist {
-    int num_parties;
+    int num_clients;
     int nV;  // Total number of vertices (plaintext metadata)
     int nE;  // Total number of edges (plaintext metadata)
     vector<vector<SSDagEntry>> VertexLists;  // VertexLists[i] = secret-shared vertices owned by party i
@@ -172,9 +199,9 @@ struct SSDistributedDaglist {
     vector<Ring> VSizes;  // Number of vertices in each VertexList
     vector<Ring> ESizes;  // Number of edges in each EdgeList
     
-    SSDistributedDaglist() : num_parties(0), nV(0), nE(0) {}
+    SSDistributedDaglist() : num_clients(0), nV(0), nE(0) {}
     
-    SSDistributedDaglist(int np) : num_parties(np), nV(0), nE(0) {
+    SSDistributedDaglist(int np) : num_clients(np), nV(0), nE(0) {
         VertexLists.resize(np);
         EdgeLists.resize(np);
         VSizes.resize(np, 0);
@@ -182,7 +209,7 @@ struct SSDistributedDaglist {
     }
     
     SSDistributedDaglist(int np, int total_nV, int total_nE) 
-        : num_parties(np), nV(total_nV), nE(total_nE) {
+        : num_clients(np), nV(total_nV), nE(total_nE) {
         VertexLists.resize(np);
         EdgeLists.resize(np);
         VSizes.resize(np, 0);
@@ -418,13 +445,13 @@ inline Daglist build_daglist_from_distributed(const DistributedDaglist& dist_dag
   all_entries.reserve(dist_daglist.nV + dist_daglist.nE);
   
   // Collect all vertices first, then all edges (maintaining vertex-order structure)
-  for (int i = 0; i < dist_daglist.num_parties; ++i) {
+  for (int i = 0; i < dist_daglist.num_clients; ++i) {
     all_entries.insert(all_entries.end(), 
                       dist_daglist.VertexLists[i].begin(), 
                       dist_daglist.VertexLists[i].end());
   }
   
-  for (int i = 0; i < dist_daglist.num_parties; ++i) {
+  for (int i = 0; i < dist_daglist.num_clients; ++i) {
     all_entries.insert(all_entries.end(), 
                       dist_daglist.EdgeLists[i].begin(), 
                       dist_daglist.EdgeLists[i].end());
@@ -440,13 +467,13 @@ inline SSDaglist build_ssdaglist_from_distributed(const SSDistributedDaglist& di
   all_entries.reserve(dist_daglist.nV + dist_daglist.nE);
   
   // Collect all vertices first, then all edges (maintaining vertex-order structure)
-  for (int i = 0; i < dist_daglist.num_parties; ++i) {
+  for (int i = 0; i < dist_daglist.num_clients; ++i) {
     all_entries.insert(all_entries.end(), 
                       dist_daglist.VertexLists[i].begin(), 
                       dist_daglist.VertexLists[i].end());
   }
   
-  for (int i = 0; i < dist_daglist.num_parties; ++i) {
+  for (int i = 0; i < dist_daglist.num_clients; ++i) {
     all_entries.insert(all_entries.end(), 
                       dist_daglist.EdgeLists[i].begin(), 
                       dist_daglist.EdgeLists[i].end());
@@ -532,5 +559,83 @@ inline void set_daglist_inputs(
   size_t wire_idx = 0;
   set_daglist_inputs(daglist, input_wires, inputs, wire_idx);
 }
+
+
+// Generate random inputs for changing data of vertices and edges in a DistributedDaglist
+// Returns a DistributedDaglist with ChangeV and ChangeE populated
+// ChangeV[i][j] = new_data for j-th vertex of party i (0 if no change)
+// ChangeE[i][j] = new_data for j-th edge of party i (0 if no change)
+// Input: dist_daglist - the distributed daglist
+//        num_changes - total number of entries to modify across all parties
+//        seed - random seed for reproducibility
+inline DistributedDaglist generate_random_data_updates(const DistributedDaglist& dist_daglist, 
+                                                       Ring num_changes, 
+                                                       Ring seed = 42) {
+  
+  // Copy the input distributed daglist
+  DistributedDaglist result = dist_daglist;
+  
+  // Initialize ChangeV and ChangeE with zeros
+  for (int p = 0; p < result.num_clients; ++p) {
+    result.ChangeV[p].resize(result.VSizes[p], 0);
+    result.ChangeE[p].resize(result.ESizes[p], 0);
+    // Initialize isChange vectors (0 = no change, 1 = changed)
+    result.isChangeV[p].resize(result.VSizes[p], 0);
+    result.isChangeE[p].resize(result.ESizes[p], 0);
+  }
+  
+  if (num_changes == 0 || dist_daglist.totalSize() == 0) {
+    return result;
+  }
+  
+  std::mt19937_64 rng(seed);
+  
+  // Collect all possible entries to update (party_id, is_vertex, local_idx)
+  struct EntryLocation {
+    int party_id;
+    bool is_vertex;
+    Ring local_idx;
+  };
+  
+  std::vector<EntryLocation> all_entries;
+  for (int p = 0; p < dist_daglist.num_clients; ++p) {
+    for (Ring i = 0; i < dist_daglist.VSizes[p]; ++i) {
+      all_entries.push_back({p, true, i});
+    }
+    for (Ring i = 0; i < dist_daglist.ESizes[p]; ++i) {
+      all_entries.push_back({p, false, i});
+    }
+  }
+  
+  if (all_entries.empty()) {
+    return result;
+  }
+  
+  // Sample num_changes entries randomly without replacement
+  Ring actual_changes = std::min(num_changes, static_cast<Ring>(all_entries.size()));
+  std::shuffle(all_entries.begin(), all_entries.end(), rng);
+  
+  // Generate random data values and populate ChangeV/ChangeE
+  std::uniform_int_distribution<Ring> data_dist(1, 1000);
+  
+  for (Ring i = 0; i < actual_changes; ++i) {
+    const auto& entry = all_entries[i];
+    Ring new_data = data_dist(rng);
+    
+    if (entry.is_vertex) {
+      result.ChangeV[entry.party_id][entry.local_idx] = new_data;
+      result.isChangeV[entry.party_id][entry.local_idx] = 1;
+    } else {
+      result.ChangeE[entry.party_id][entry.local_idx] = new_data;
+      result.isChangeE[entry.party_id][entry.local_idx] = 1;
+    }
+  }
+  
+  return result;
+}
+
+
+
+
 
 #endif // GRAPH_GEN_H

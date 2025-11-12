@@ -11,32 +11,20 @@
 #include <omp.h>
 
 #include "utils.h"
+#include "graphutils.h"
 
 using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
+common::utils::Circuit<Ring> generateCircuit(int nP, int pid, std::vector<size_t> subg_num_vert,
+                                            std::vector<size_t> subg_num_edge) {
 
     std::cout << "Generating circuit" << std::endl;
     
     common::utils::Circuit<Ring> circ;
 
-    // Distributed Graph
-    size_t num_vert = 0.1 * vec_size;
-    size_t num_edge = vec_size - num_vert;
-    std::vector<size_t> subg_num_vert(nP);
-    std::vector<size_t> subg_num_edge(nP);
-    for (int i = 0; i < subg_num_vert.size(); ++i) {
-        if (i != nP - 1) {
-            subg_num_vert[i] = num_vert / nP;
-            subg_num_edge[i] = num_edge / nP;
-        } else {
-            subg_num_vert[i] = num_vert / nP + num_vert % nP;
-            subg_num_edge[i] = num_edge / nP + num_edge % nP;
-        }
-    }
-
+    // Input wires for each client's subgraph vertices and edges
     std::vector<std::vector<wire_t>> subg_vertex_list(nP);
     for (int i = 0; i < subg_vertex_list.size(); ++i) {
         std::vector<wire_t> subg_vertex_list_party(subg_num_vert[i]);
@@ -56,7 +44,6 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
     }
 
     // Initialize data change vectors. 
-    //Assume GenList is done.
 
     std::vector<std::vector<wire_t>> vertex_changed(nP);
     for (int i = 0; i < vertex_changed.size(); ++i){
@@ -139,8 +126,11 @@ void benchmark(const bpo::variables_map& opts) {
         save_file = opts["output"].as<std::string>();
     }
 
-    auto vec_size = opts["vec-size"].as<size_t>();
+    auto num_vert = opts["num-vert"].as<size_t>();
+    auto num_edge = opts["num-edge"].as<size_t>();
+    auto vec_size = num_vert + num_edge;
     auto nP = opts["num-parties"].as<int>();
+    auto nC = opts["num-clients"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
     auto threads = opts["threads"].as<size_t>();
@@ -155,30 +145,16 @@ void benchmark(const bpo::variables_map& opts) {
 
     std::cout << "Starting benchmarks" << std::endl;
 
-    std::shared_ptr<io::NetIOMP> network = nullptr;
-    if (opts["localhost"].as<bool>()) {
-        network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, nullptr, true);
-    } else {
-        std::ifstream fnet(opts["net-config"].as<std::string>());
-        if (!fnet.good()) {
-            fnet.close();
-            throw std::runtime_error("Could not open network config file");
-        }
-        json netdata;
-        fnet >> netdata;
-        fnet.close();
-        std::vector<std::string> ipaddress(nP + 1);
-        std::array<char*, 5> ip{};
-        for (size_t i = 0; i < nP + 1; ++i) {
-            ipaddress[i] = netdata[i].get<std::string>();
-            ip[i] = ipaddress[i].data();
-        }
-        network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
-    }
+    std::string net_config = opts.count("net-config") ? opts["net-config"].as<std::string>() : "";
+    std::shared_ptr<io::NetIOMP> network = createNetwork(pid, nP, latency, port,
+                                                          opts["localhost"].as<bool>(),
+                                                          net_config);
 
     json output_data;
     output_data["details"] = {{"num_parties", nP},
-                              {"vec_size", vec_size},
+                              {"num_clients", nC},
+                              {"num_vert", num_vert},
+                              {"num_vert", num_vert},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
@@ -192,10 +168,29 @@ void benchmark(const bpo::variables_map& opts) {
     }
     std::cout << std::endl;
 
+    // Generate test graph
+    Ring nV = static_cast<Ring>(num_vert);
+    Ring nE = static_cast<Ring>(num_edge);
+    
+    std::cout << "============================\n" << std::endl;
+    std::cout << "Generating random inputs " << std::endl;
+    std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << std::endl;
+    auto edges = generate_scale_free(nV, nE);
+    std::cout << "Generated " << edges.size() << " edges" << std::endl;
+    
+    std::cout << "Building daglist..." << std::endl;
+    auto daglist = build_daglist(nV, edges);
+    std::cout << "Built daglist with " << daglist.size() << " entries" << std::endl;
+    
+    // Distribute daglist across clients
+    std::cout << "Distributing daglist across " << nC << " clients..." << std::endl;
+    auto dist_daglist = distribute_daglist(daglist, nC);
+
+
     StatsPoint start(*network);
     network->sync();
 
-    auto circ = generateCircuit(nP, pid, vec_size).orderGatesByLevel();
+    auto circ = generateCircuit(nP, pid, dist_daglist.VSizes, dist_daglist.ESizes).orderGatesByLevel();
     network->sync();
 
     std::cout << "--- Circuit ---" << std::endl;
@@ -204,7 +199,7 @@ void benchmark(const bpo::variables_map& opts) {
     std::unordered_map<common::utils::wire_t, int> input_pid_map;
     for (const auto& g : circ.gates_by_level[0]) {
         if (g->type == common::utils::GateType::kInp) {
-            input_pid_map[g->out] = 1;
+            input_pid_map[g->out] = 1;  // All inputs belong to party 1
         }
     }
 
@@ -222,7 +217,6 @@ void benchmark(const bpo::variables_map& opts) {
     // Why latency_us and use_pking?
     OnlineEvaluator eval(nP, pid, network, std::move(preproc), circ, threads, seed, latency_us, use_pking);
     
-    // Set inputs: binary values for t vector (first vec_size wires) and payload values for p vector (second vec_size wires)
     std::unordered_map<common::utils::wire_t, Ring> inputs;
     
     // Collect all input wires owned by this party
@@ -238,34 +232,81 @@ void benchmark(const bpo::variables_map& opts) {
     
     std::cout << "Setting inputs for party " << pid << std::endl;
     
-    // Set seed for reproducible random inputs
-    srand(seed + pid);
+    // Only party 1 sets inputs
+    std::vector<Ring> graph_input_values;
+    std::vector<Ring> indicator_input_values;
+    std::vector<Ring> update_input_values;
     
-    // First vec_size wires are for graph
-    // Next vec_size wires indicate update (binary)
-    // Next vec_size wires are updated data
-    std::vector<Ring> graph_input_values(vec_size);
-    std::vector<Ring> indicator_input_values(vec_size);
-    std::vector<Ring> update_input_values(vec_size);
+    // Declare updated_daglist outside to use after output generation
+    DistributedDaglist updated_daglist;
     
-    for (size_t i = 0; i < input_wires.size(); ++i) {
-        auto wire = input_wires[i];
-        if (i >= vec_size && i < 2*vec_size) {
-            // indicator vector: binary values (0 or 1)
-            Ring val = static_cast<Ring>(rand() % 2);
-            inputs[wire] = val;
-            indicator_input_values[i - vec_size] = val;
-        } else {
-            // random graph data
-            Ring val = static_cast<Ring>(rand() % 100);
-            inputs[wire] = val;
-            if (i < vec_size){
-                graph_input_values[i] = val;
+    if (pid == 1) {
+
+        // Print distribution info
+        std::cout << "\n=== Daglist Distribution ===" << std::endl;
+        for (int i = 0; i < nC; ++i) {
+            std::cout << "Client " << i << ": " << dist_daglist.VSizes[i] << " vertices, "
+                    << dist_daglist.ESizes[i] << " edges" << std::endl;
+        }
+        std::cout << "============================\n" << std::endl;
+    
+        
+        // Generate random data updates (change 20% of entries)
+        Ring num_changes = static_cast<Ring>(vec_size * 0.2);
+        updated_daglist = generate_random_data_updates(dist_daglist, num_changes, seed);
+
+        // Set circuit inputs in the expected order:
+        // 1. Original graph data (vertices + edges) across all clients
+        // 2. Change indicators (isChangeV + isChangeE) across all clients
+        // 3. New data values (ChangeV + ChangeE) across all clients
+
+        // Collect all values in client order (client 0..nC-1)
+        for (int c = 0; c < nC; ++c) {
+            // Vertex data for this client
+            for (size_t i = 0; i < updated_daglist.VSizes[c]; ++i) {
+                graph_input_values.push_back(updated_daglist.VertexLists[c][i].data);
             }
-            else{
-                update_input_values[i % vec_size] = val;
+            // Edge data for this client
+            for (size_t i = 0; i < updated_daglist.ESizes[c]; ++i) {
+                graph_input_values.push_back(updated_daglist.EdgeLists[c][i].data);
             }
         }
+
+        for (int c = 0; c < nC; ++c) {
+            // Vertex change indicators
+            for (size_t i = 0; i < updated_daglist.VSizes[c]; ++i) {
+                indicator_input_values.push_back(updated_daglist.isChangeV[c][i]);
+            }
+            // Edge change indicators
+            for (size_t i = 0; i < updated_daglist.ESizes[c]; ++i) {
+                indicator_input_values.push_back(updated_daglist.isChangeE[c][i]);
+            }
+        }
+
+        for (int c = 0; c < nC; ++c) {
+            // Vertex new data values
+            for (size_t i = 0; i < updated_daglist.VSizes[c]; ++i) {
+                update_input_values.push_back(updated_daglist.ChangeV[c][i]);
+            }
+            // Edge new data values
+            for (size_t i = 0; i < updated_daglist.ESizes[c]; ++i) {
+                update_input_values.push_back(updated_daglist.ChangeE[c][i]);
+            }
+        }
+
+        // Map collected values into circuit input wires (in order)
+        size_t wire_idx = 0;
+        for (size_t i = 0; i < graph_input_values.size() && wire_idx < input_wires.size(); ++i) {
+            inputs[input_wires[wire_idx++]] = graph_input_values[i];
+        }
+        for (size_t i = 0; i < indicator_input_values.size() && wire_idx < input_wires.size(); ++i) {
+            inputs[input_wires[wire_idx++]] = indicator_input_values[i];
+        }
+        for (size_t i = 0; i < update_input_values.size() && wire_idx < input_wires.size(); ++i) {
+            inputs[input_wires[wire_idx++]] = update_input_values[i];
+        }
+        
+
     }
 
     std::cout << "Total inputs set: " << inputs.size() << std::endl;
@@ -287,6 +328,63 @@ void benchmark(const bpo::variables_map& opts) {
     auto outputs = eval.getOutputs();
     network->sync();
     std::cout << "Number of outputs: " << outputs.size() << std::endl;
+
+    // Update daglist with outputs and print
+    if (pid == 1) {
+        // Update the distributed daglist with output values
+        size_t output_idx = 0;
+        for (int c = 0; c < nC; ++c) {
+            // Update vertex data
+            for (size_t i = 0; i < updated_daglist.VSizes[c]; ++i) {
+                if (output_idx < outputs.size()) {
+                    updated_daglist.VertexLists[c][i].data = outputs[output_idx++];
+                }
+            }
+            // Update edge data
+            for (size_t i = 0; i < updated_daglist.ESizes[c]; ++i) {
+                if (output_idx < outputs.size()) {
+                    updated_daglist.EdgeLists[c][i].data = outputs[output_idx++];
+                }
+            }
+        }
+        
+        // Print updated daglist entries for each client
+        std::cout << "\n=== Updated Daglist Entries (First 5 per Client) ===" << std::endl;
+        for (int c = 0; c < nC; ++c) {
+            std::cout << "\n--- Client " << c << " ---" << std::endl;
+            
+            // Print first 5 vertices
+            size_t v_print = std::min(static_cast<size_t>(5), static_cast<size_t>(updated_daglist.VSizes[c]));
+            std::cout << "Vertices:" << std::endl;
+            for (size_t i = 0; i < v_print; ++i) {
+                const auto& entry = updated_daglist.VertexLists[c][i];
+                std::cout << "  V[" << i << "]: "
+                          << "src=" << entry.src << ", "
+                          << "dst=" << entry.dst << ", "
+                          << "isV=" << entry.isV << ", "
+                          << "data=" << entry.data << ", "
+                          << "sigs=" << entry.sigs << ", "
+                          << "sigv=" << entry.sigv << ", "
+                          << "sigd=" << entry.sigd << std::endl;
+            }
+            
+            // Print first 5 edges
+            size_t e_print = std::min(static_cast<size_t>(5), static_cast<size_t>(updated_daglist.ESizes[c]));
+            std::cout << "Edges:" << std::endl;
+            for (size_t i = 0; i < e_print; ++i) {
+                const auto& entry = updated_daglist.EdgeLists[c][i];
+                std::cout << "  E[" << i << "]: "
+                          << "src=" << entry.src << ", "
+                          << "dst=" << entry.dst << ", "
+                          << "isV=" << entry.isV << ", "
+                          << "data=" << entry.data << ", "
+                          << "sigs=" << entry.sigs << ", "
+                          << "sigv=" << entry.sigv << ", "
+                          << "sigd=" << entry.sigd << std::endl;
+            }
+        }
+        std::cout << "=============================================\n" << std::endl;
+    }
 
     // Print example inputs and outputs
     if (pid == 1) {  // Only print from party 1 to avoid duplicate output
@@ -375,7 +473,9 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("vec-size,v", bpo::value<size_t>()->required(), "Size of the vector to compact.")
+        ("num-clients", bpo::value<int>()->default_value(2), "Number of parties.")
+        ("num-vert", bpo::value<size_t>()->default_value(1000), "Number of vertices in the graph.")
+        ("num-edge", bpo::value<size_t>()->default_value(4000), "Number of edges in the graph.")
         ("num-payloads", bpo::value<size_t>()->default_value(1), "Number of payload vectors.")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
@@ -431,3 +531,5 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+
+// usage: ./../run.sh data_change --num-parties 2 --num-clients 2 --num-vert 1000 --num-edge 4000

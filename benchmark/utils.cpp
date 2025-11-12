@@ -174,6 +174,31 @@ int64_t peakVirtualMemory() { return -1; }
 int64_t peakResidentSetSize() { return -1; }
 #endif
 
+std::shared_ptr<io::NetIOMP> createNetwork(int pid, int nP, int latency, int port, 
+                                            bool localhost, const std::string& net_config_path) {
+    using json = nlohmann::json;
+    
+    if (localhost) {
+        return std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, nullptr, true);
+    } else {
+        std::ifstream fnet(net_config_path);
+        if (!fnet.good()) {
+            fnet.close();
+            throw std::runtime_error("Could not open network config file");
+        }
+        json netdata;
+        fnet >> netdata;
+        fnet.close();
+        std::vector<std::string> ipaddress(nP + 1);
+        std::array<char*, 5> ip{};
+        for (size_t i = 0; i < nP + 1; ++i) {
+            ipaddress[i] = netdata[i].get<std::string>();
+            ip[i] = ipaddress[i].data();
+        }
+        return std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
+    }
+}
+
 // Sub-circuit building functions
 
 // Shuffle a position map and a list of payload vectors, reconstruct the

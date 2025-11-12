@@ -166,26 +166,10 @@ void benchmark(const bpo::variables_map& opts) {
     else { omp_set_num_threads(10); }
     std::cout << "Starting benchmarks" << std::endl;
 
-    std::shared_ptr<io::NetIOMP> network = nullptr;
-    if (opts["localhost"].as<bool>()) {
-        network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, nullptr, true);
-    } else {
-        std::ifstream fnet(opts["net-config"].as<std::string>());
-        if (!fnet.good()) {
-            fnet.close();
-            throw std::runtime_error("Could not open network config file");
-        }
-        json netdata;
-        fnet >> netdata;
-        fnet.close();
-        std::vector<std::string> ipaddress(nP + 1);
-        std::array<char*, 5> ip{};
-        for (size_t i = 0; i < nP + 1; ++i) {
-            ipaddress[i] = netdata[i].get<std::string>();
-            ip[i] = ipaddress[i].data();
-        }
-        network = std::make_shared<io::NetIOMP>(pid, nP + 1, latency, port, ip.data(), false);
-    }
+    std::string net_config = opts.count("net-config") ? opts["net-config"].as<std::string>() : "";
+    std::shared_ptr<io::NetIOMP> network = createNetwork(pid, nP, latency, port,
+                                                          opts["localhost"].as<bool>(),
+                                                          net_config);
 
     // Increase socket buffer sizes to prevent deadlocks with large messages
     increaseSocketBuffers(network.get(), 128 * 1024 * 1024);
