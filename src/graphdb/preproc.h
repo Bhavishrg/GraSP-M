@@ -312,6 +312,42 @@ struct PreprocRewireGate : public PreprocGate<R> {
       : PreprocGate<R>(), vec_size(vec_size), num_payloads(num_payloads) {}
 };
 
+// Preprocessing for Delete Wires gate
+// Takes a delete mask `del` and multiple payload vectors
+// Indices where `del[i] == 1` will be removed from the payloads
+// 
+// Gate logic:
+//   1. Shuffle del and all payload vectors together
+//   2. Reconstruct del to reveal which positions should be deleted
+//   3. Compact/remove indices where del == 1 from all payloads
+//
+// This gate requires preprocessing for:
+//   - Shuffle operation (for del + payloads)
+//   - Reconstruction of del
+template <class R>
+struct PreprocDeleteWiresGate : public PreprocGate<R> {
+  // Preprocessing for shuffle operation (del + all payloads)
+  std::vector<AddShare<R>> shuffle_a;
+  std::vector<TPShare<R>> shuffle_tp_a;
+  std::vector<AddShare<R>> shuffle_b;
+  std::vector<TPShare<R>> shuffle_tp_b;
+  std::vector<AddShare<R>> shuffle_c;
+  std::vector<TPShare<R>> shuffle_tp_c;
+  std::vector<Ring> shuffle_delta;
+  std::vector<int> shuffle_pi;
+  std::vector<std::vector<int>> shuffle_tp_pi_all;
+  
+  PreprocDeleteWiresGate() = default;
+  PreprocDeleteWiresGate(const std::vector<AddShare<R>>& shuffle_a, const std::vector<TPShare<R>>& shuffle_tp_a,
+                         const std::vector<AddShare<R>>& shuffle_b, const std::vector<TPShare<R>>& shuffle_tp_b,
+                         const std::vector<AddShare<R>>& shuffle_c, const std::vector<TPShare<R>>& shuffle_tp_c,
+                         const std::vector<R>& shuffle_delta, const std::vector<int>& shuffle_pi,
+                         const std::vector<std::vector<int>>& shuffle_tp_pi_all)
+      : PreprocGate<R>(), shuffle_a(shuffle_a), shuffle_tp_a(shuffle_tp_a), shuffle_b(shuffle_b), shuffle_tp_b(shuffle_tp_b),
+        shuffle_c(shuffle_c), shuffle_tp_c(shuffle_tp_c), shuffle_delta(shuffle_delta), shuffle_pi(shuffle_pi),
+        shuffle_tp_pi_all(shuffle_tp_pi_all) {}
+};
+
 // Preprocessed data for the circuit.
 template <class R>
 struct PreprocCircuit {

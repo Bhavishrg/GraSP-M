@@ -75,10 +75,10 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size,
         std::cout << "  Adding BFS iteration " << (iter + 1) << std::endl;
         
         // Propagate step: forward message passing using sigs as position map
-        auto propagated = addSubCircPropagate(circ, pos_map_v_to_s, current_data, num_verts, permutation);
+        auto propagated = addSubCircPropagate(circ, pos_map_v_to_s, current_data, num_verts, permutation, false);
         
         // Permutation gate: reorder propagated data using sigd as position map
-        std::vector<std::vector<common::utils::wire_t>> payloads = {propagated};
+        std::vector<std::vector<common::utils::wire_t>> payloads = {{propagated}};
         auto permuted = addSubCircPermList(circ, pos_map_s_to_d, payloads, permutation)[0];
         
         // Gather step: backward message passing using sigv as position map
@@ -383,3 +383,5 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+
+// usage: ./../run.sh bfs --num-parties 2 -vec-size 10000 --num-vert 1000

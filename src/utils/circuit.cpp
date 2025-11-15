@@ -83,6 +83,9 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
     case kCompact:
       os << "Compact";
       break;
+    case kDeleteWires:
+      os << "Delete Wires";
+      break;
 
     case kGroupwiseIndex:
       os << "Group-wise Index";

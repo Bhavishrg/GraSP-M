@@ -32,6 +32,7 @@ enum GateType {
   kPermAndSh,
   kPublicPerm,
   kCompact,
+  kDeleteWires,
   kGroupwiseIndex,
   kGroupwisePropagate,
   kSort,
@@ -621,6 +622,96 @@ class Circuit {
   }
 
 
+  // Add a Delete Wires gate that takes a delete mask `del` and multiple payload
+  // vectors. Indices where `del[i] == 1` will be removed from the payloads.
+  // The gate reserves output wires equal to the input vector size. At runtime
+  // the front of each output vector will contain the compacted payloads and
+  // unused tail positions may be ignored by subsequent logic. The original
+  // vector size is passed through the gate metadata (`vec_size`).
+  // The permutation parameter determines the size of del and payload vectors.
+  // Returns: (keep_indices_wire, payload_outputs)
+  // keep_indices_wire holds the actual keep_indices array (only on party 1, others have 0)
+  std::pair<wire_t, std::vector<std::vector<wire_t>>> addDeleteWiresGate(
+      const std::vector<wire_t>& del_vector,
+      const std::vector<std::vector<wire_t>>& payload_vectors,
+      const std::vector<std::vector<int>>& permutation) {
+    
+    if (permutation.size() == 0) {
+      throw std::invalid_argument("No permutation passed.");
+    }
+
+    size_t vec_size = permutation[0].size();
+    size_t num_payloads = payload_vectors.size();
+
+    if (num_payloads == 0) {
+      throw std::invalid_argument("At least one payload vector is required.");
+    }
+
+    if (del_vector.size() != vec_size) {
+      throw std::invalid_argument("del_vector size must match permutation size.");
+    }
+
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (permutation[i].size() != vec_size) {
+        throw std::invalid_argument("Permutation size mismatch.");
+      }
+    }
+
+    for (size_t p = 0; p < num_payloads; ++p) {
+      if (payload_vectors[p].size() != vec_size) {
+        throw std::invalid_argument("All payload vectors must have the same size as permutation.");
+      }
+    }
+
+    for (size_t i = 0; i < vec_size; i++) {
+      if (!isWireValid(del_vector[i])) {
+        throw std::invalid_argument("Invalid wire ID in del_vector.");
+      }
+      for (size_t p = 0; p < num_payloads; ++p) {
+        if (!isWireValid(payload_vectors[p][i])) {
+          throw std::invalid_argument("Invalid wire ID in payload vector.");
+        }
+      }
+    }
+
+    // Allocate output wires: 1 wire for keep_indices, vec_size for each payload
+    wire_t keep_indices_wire = num_wires;
+    
+    std::vector<std::vector<wire_t>> payload_outputs(num_payloads, std::vector<wire_t>(vec_size));
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        payload_outputs[p][i] = num_wires + 1 + vec_size * p + i;
+      }
+    }
+
+    // Create input vector [del_0,...,del_n, p1_0,...,p1_n, p2_0,...]
+    std::vector<wire_t> input((1 + num_payloads) * vec_size);
+    for (size_t i = 0; i < vec_size; i++) {
+      input[i] = del_vector[i];
+    }
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        input[vec_size * (p + 1) + i] = payload_vectors[p][i];
+      }
+    }
+
+    // Flatten outputs into a single vector for the gate constructor
+    // Output format: [keep_indices_wire, p1_0,...,p1_n, p2_0,...,p2_n, ...]
+    std::vector<wire_t> output(1 + num_payloads * vec_size);
+    output[0] = keep_indices_wire;
+    for (size_t p = 0; p < num_payloads; ++p) {
+      for (size_t i = 0; i < vec_size; i++) {
+        output[1 + vec_size * p + i] = payload_outputs[p][i];
+      }
+    }
+
+    gates_.push_back(std::make_shared<SIMDOGate>(GateType::kDeleteWires, 0, input, output, permutation, vec_size));
+    num_wires += 1 + num_payloads * vec_size;
+
+    return {keep_indices_wire, payload_outputs};
+  }
+
+
 
 
 
@@ -717,6 +808,19 @@ class Circuit {
           break;
         }
 
+        case GateType::kDeleteWires: {
+          const auto* g = static_cast<SIMDOGate*>(gate.get());
+          size_t gate_depth = 0;
+          for (size_t i = 0; i < g->in.size(); i++) {
+            gate_depth = std::max({gate_level[g->in[i]], gate_depth});
+          }
+          for (int i = 0; i < g->outs.size(); i++) {
+            gate_level[g->outs[i]] = gate_depth + 1;
+          }
+          depth = std::max(depth, gate_level[gate->outs[0]]);
+          break;
+        }
+
         case GateType::kGroupwiseIndex: {
           const auto* g = static_cast<SIMDOGate*>(gate.get());
           size_t gate_depth = 0;
@@ -779,7 +883,7 @@ class Circuit {
     std::vector<std::vector<gate_ptr_t>> gates_by_level(depth + 1);
     for (const auto& gate : gates_) {
       res.count[gate->type]++;
-      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kGroupwiseIndex || gate->type == GateType::kGroupwisePropagate || gate->type == GateType::kSort || gate->type == GateType::kRewire) {
+      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kCompact || gate->type == GateType::kDeleteWires || gate->type == GateType::kGroupwiseIndex || gate->type == GateType::kGroupwisePropagate || gate->type == GateType::kSort || gate->type == GateType::kRewire) {
         gates_by_level[gate_level[gate->outs[0]]].push_back(gate);
       } else {
         gates_by_level[gate_level[gate->out]].push_back(gate);

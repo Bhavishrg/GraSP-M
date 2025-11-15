@@ -3092,6 +3092,179 @@ namespace graphdb
         }
     }
 
+    void OnlineEvaluator::deleteWiresEvaluate(const std::vector<common::utils::SIMDOGate> &delete_gates) {
+        if (id_ == 0) { return; }
+        if (delete_gates.empty()) { return; }
+
+        for (const auto& delete_gate : delete_gates) {
+            auto* pre_delete = static_cast<PreprocDeleteWiresGate<Ring>*>(preproc_.gates[delete_gate.out].get());
+            
+            // Input format: [del_0,...,del_n, p1_0,...,p1_n, p2_0,...,p2_n, ...]
+            // Output format: [p1_out_0,...,p1_out_n, p2_out_0,...,p2_out_n, ...] (compacted)
+            
+            size_t vec_size = delete_gate.vec_size;  // From gate metadata
+            size_t total_inputs = delete_gate.in.size();
+            size_t num_payloads = (total_inputs / vec_size) - 1;
+            
+            // Extract del and payload shares
+            std::vector<Ring> del_shares(vec_size);
+            std::vector<std::vector<Ring>> payload_shares(num_payloads, std::vector<Ring>(vec_size));
+            
+            for (size_t i = 0; i < vec_size; ++i) {
+                del_shares[i] = wires_[delete_gate.in[i]];
+            }
+            for (size_t p = 0; p < num_payloads; ++p) {
+                for (size_t i = 0; i < vec_size; ++i) {
+                    payload_shares[p][i] = wires_[delete_gate.in[vec_size * (p + 1) + i]];
+                }
+            }
+            
+            // Step 1: Shuffle del and all payloads using the same permutation
+            std::vector<Ring> shuffled_del(vec_size);
+            std::vector<std::vector<Ring>> shuffled_payloads(num_payloads, std::vector<Ring>(vec_size));
+            
+            // Shuffle logic - mask with 'a' values
+            std::vector<Ring> z_del(vec_size);
+            std::vector<std::vector<Ring>> z_payloads(num_payloads, std::vector<Ring>(vec_size));
+            
+            for (size_t i = 0; i < vec_size; ++i) {
+                z_del[i] = del_shares[i] + pre_delete->shuffle_a[i].valueAt();
+            }
+            for (size_t p = 0; p < num_payloads; ++p) {
+                for (size_t i = 0; i < vec_size; ++i) {
+                    z_payloads[p][i] = payload_shares[p][i] + pre_delete->shuffle_a[i].valueAt();
+                }
+            }
+            
+            // Shuffle protocol for del and payloads using same permutation
+            if (id_ == 1) {
+                // Party 1 collects from all parties
+                std::vector<Ring> z_del_sum = z_del;
+                std::vector<std::vector<Ring>> z_payloads_sum = z_payloads;
+                
+                for (int pid = 2; pid <= nP_; ++pid) {
+                    std::vector<Ring> z_del_recv(vec_size);
+                    network_->recv(pid, z_del_recv.data(), vec_size * sizeof(Ring));
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        z_del_sum[i] += z_del_recv[i];
+                    }
+                    
+                    for (size_t p = 0; p < num_payloads; ++p) {
+                        std::vector<Ring> z_payload_recv(vec_size);
+                        network_->recv(pid, z_payload_recv.data(), vec_size * sizeof(Ring));
+                        for (size_t i = 0; i < vec_size; ++i) {
+                            z_payloads_sum[p][i] += z_payload_recv[i];
+                        }
+                    }
+                }
+                usleep(latency_);
+                
+                // Apply permutation and mask for del
+                std::vector<Ring> z_del_permuted(vec_size);
+                for (size_t i = 0; i < vec_size; ++i) {
+                    z_del_permuted[i] = z_del_sum[pre_delete->shuffle_pi[i]] + pre_delete->shuffle_b[pre_delete->shuffle_pi[i]].valueAt();
+                    shuffled_del[i] = pre_delete->shuffle_c[i].valueAt();
+                }
+                network_->send(2, z_del_permuted.data(), vec_size * sizeof(Ring));
+                
+                // Apply permutation and mask for payloads
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    std::vector<Ring> z_payload_permuted(vec_size);
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        z_payload_permuted[i] = z_payloads_sum[p][pre_delete->shuffle_pi[i]] + pre_delete->shuffle_b[pre_delete->shuffle_pi[i]].valueAt();
+                        shuffled_payloads[p][i] = pre_delete->shuffle_c[i].valueAt();
+                    }
+                    network_->send(2, z_payload_permuted.data(), vec_size * sizeof(Ring));
+                }
+            } else {
+                // Send to party 1
+                network_->send(1, z_del.data(), vec_size * sizeof(Ring));
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    network_->send(1, z_payloads[p].data(), vec_size * sizeof(Ring));
+                }
+                network_->flush(1);
+                
+                // Receive from previous party
+                std::vector<Ring> z_del_permuted(vec_size);
+                network_->recv(id_ - 1, z_del_permuted.data(), vec_size * sizeof(Ring));
+                usleep(latency_);
+                
+                std::vector<std::vector<Ring>> z_payloads_permuted(num_payloads, std::vector<Ring>(vec_size));
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    network_->recv(id_ - 1, z_payloads_permuted[p].data(), vec_size * sizeof(Ring));
+                }
+                
+                // Apply own permutation for del
+                std::vector<Ring> z_del_next(vec_size);
+                for (size_t i = 0; i < vec_size; ++i) {
+                    if (id_ != nP_) {
+                        z_del_next[i] = z_del_permuted[pre_delete->shuffle_pi[i]] + pre_delete->shuffle_b[pre_delete->shuffle_pi[i]].valueAt();
+                        shuffled_del[i] = pre_delete->shuffle_c[i].valueAt();
+                    } else {
+                        z_del_next[i] = z_del_permuted[pre_delete->shuffle_pi[i]] + pre_delete->shuffle_b[pre_delete->shuffle_pi[i]].valueAt() - pre_delete->shuffle_delta[i];
+                        shuffled_del[i] = z_del_next[i] + pre_delete->shuffle_c[i].valueAt();
+                    }
+                }
+                
+                if (id_ != nP_) {
+                    network_->send(id_ + 1, z_del_next.data(), vec_size * sizeof(Ring));
+                }
+                
+                // Apply own permutation for payloads
+                for (size_t p = 0; p < num_payloads; ++p) {
+                    std::vector<Ring> z_payload_next(vec_size);
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        if (id_ != nP_) {
+                            z_payload_next[i] = z_payloads_permuted[p][pre_delete->shuffle_pi[i]] + pre_delete->shuffle_b[pre_delete->shuffle_pi[i]].valueAt();
+                            shuffled_payloads[p][i] = pre_delete->shuffle_c[i].valueAt();
+                        } else {
+                            z_payload_next[i] = z_payloads_permuted[p][pre_delete->shuffle_pi[i]] + pre_delete->shuffle_b[pre_delete->shuffle_pi[i]].valueAt() - pre_delete->shuffle_delta[i];
+                            shuffled_payloads[p][i] = z_payload_next[i] + pre_delete->shuffle_c[i].valueAt();
+                        }
+                    }
+                    
+                    if (id_ != nP_) {
+                        network_->send(id_ + 1, z_payload_next.data(), vec_size * sizeof(Ring));
+                    }
+                }
+            }
+            
+            // Step 2: Reconstruct del to reveal deletion positions
+            std::vector<Ring> del_reconstructed(vec_size, 0);
+            reconstruct(nP_, id_, network_, shuffled_del, del_reconstructed, use_pking_, latency_);
+            
+            // Step 3: Compact payloads by removing indices where del == 1
+            // Count non-deleted elements
+            std::vector<size_t> keep_indices;
+            for (size_t i = 0; i < vec_size; ++i) {
+                if (del_reconstructed[i] == 0) {
+                    keep_indices.push_back(i);
+                }
+            }
+            
+            // Write keep_indices to the first output wire (only party 1 has the actual value)
+            // We'll encode the count as the wire value for party 1
+            if (id_ == 1) {
+                wires_[delete_gate.outs[0]] = static_cast<Ring>(keep_indices.size());
+            } else {
+                wires_[delete_gate.outs[0]] = Ring(0);
+            }
+            
+            // Write compacted outputs to wires (front-packed)
+            // Output format: [keep_indices_wire, p1_0,...,p1_n, p2_0,...,p2_n, ...]
+            for (size_t p = 0; p < num_payloads; ++p) {
+                for (size_t i = 0; i < vec_size; ++i) {
+                    if (i < keep_indices.size()) {
+                        wires_[delete_gate.outs[1 + vec_size * p + i]] = shuffled_payloads[p][keep_indices[i]];
+                    } else {
+                        // Fill remaining slots with zero (or leave as-is)
+                        wires_[delete_gate.outs[1 + vec_size * p + i]] = Ring(0);
+                    }
+                }
+            }
+        }
+    }
+
     void OnlineEvaluator::rewireEvaluate(const std::vector<common::utils::SIMDOGate> &rewire_gates) {
         if (id_ == 0) { return; }
         if (rewire_gates.empty()) { return; }
@@ -3182,6 +3355,7 @@ namespace graphdb
         std::vector<common::utils::SIMDOGate> gp_gates;
         std::vector<common::utils::SIMDOGate> sort_gates;
         std::vector<common::utils::SIMDOGate> rewire_gates;
+        std::vector<common::utils::SIMDOGate> delete_gates;
 
         // First pass: collect the multi-round gates so their batched handlers can run once.
         for (auto &gate : circ_.gates_by_level[depth]) {
@@ -3244,6 +3418,12 @@ namespace graphdb
                     rewire_gates.push_back(*g);
                     break;
                 }
+                case common::utils::GateType::kDeleteWires: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    // Delete wires gates are processed immediately
+                    delete_gates.push_back(*g);
+                    break;
+                }
                 default:
                     break;
             }
@@ -3259,6 +3439,7 @@ namespace graphdb
         // if (!gp_gates.empty()) { groupwisePropagateEvaluateParallel(gp_gates); }
         if (!sort_gates.empty()) { sortEvaluate(sort_gates); }
         if (!rewire_gates.empty()) { rewireEvaluate(rewire_gates); }
+        if (!delete_gates.empty()) { deleteWiresEvaluate(delete_gates); }
         
         // Second pass: handle locally evaluable gates.
         for (auto &gate : circ_.gates_by_level[depth]) {

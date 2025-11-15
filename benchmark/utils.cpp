@@ -247,7 +247,8 @@ std::vector<common::utils::wire_t> addSubCircPropagate(
     const std::vector<common::utils::wire_t>& position_map_shares,
     const std::vector<common::utils::wire_t>& data_values,
     size_t num_groups,
-    std::vector<std::vector<int>> permutation) {
+    std::vector<std::vector<int>> permutation,
+    bool in) {
     
     size_t vec_size = position_map_shares.size();
     
@@ -255,25 +256,41 @@ std::vector<common::utils::wire_t> addSubCircPropagate(
     if (num_groups >= vec_size) {
         throw std::invalid_argument("num_groups must be less than vec_size");
     }
-    
+
     // Step 1: Compute differences for group boundaries
     // data_values'[0] = data_values[0]
     // data_values'[i] = data_values[i] - data_values[i-1] for i = 1 to num_groups-1
     // data_values'[i] = 0 for i >= num_groups
     std::vector<common::utils::wire_t> data_values_diff(vec_size);
-    
-    for (size_t i = 0; i < vec_size; ++i) {
-        if (i == 0) {
-            // data_values'[0] = data_values[0]
-            data_values_diff[i] = data_values[i];
-        } else if (i < num_groups) {
-            // For i from 1 to num_groups-1: compute differences
-            // data_values'[i] = data_values[i] - data_values[i-1]
-            data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values[i], data_values[i - 1]);
-        } else {
-            // For i >= num_groups: set to 0
-            // data_values'[i] = 0
-            data_values_diff[i] = 0;
+    if (in) {
+        for (int i = static_cast<int>(num_groups) - 1; i >= 0; --i) {
+            if (i == static_cast<int>(num_groups) - 1) {
+                // data_values'[num_groups-1] = data_values[num_groups-1]
+                data_values_diff[i] = data_values[i];
+            } else {
+                // For i from 0 to num_groups-2: compute differences
+                // data_values'[i] = data_values[i] - data_values[i+1]
+                data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values[i], data_values[i + 1]);
+            }
+        }
+        // Set remaining elements to 0
+        for (size_t i = num_groups; i < vec_size; ++i) {
+            data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values[i], data_values[i]);
+        }
+    } else {
+        for (size_t i = 0; i < vec_size; ++i) {
+            if (i == 0) {
+                // data_values'[0] = data_values[0]
+                data_values_diff[i] = data_values[i];
+            } else if (i < num_groups) {
+                // For i from 1 to num_groups-1: compute differences
+                // data_values'[i] = data_values[i] - data_values[i-1]
+                data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values[i], data_values[i - 1]);
+            } else {
+                // For i >= num_groups: set to 0
+                // data_values'[i] = 0
+                data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values[i], data_values[i]);
+            }
         }
     }
 
@@ -284,10 +301,17 @@ std::vector<common::utils::wire_t> addSubCircPropagate(
 
     // Step 5: Compute prefix sum of reordered data
     std::vector<common::utils::wire_t> prefix_sum(vec_size);
-    prefix_sum[0] = reordered_data[0];
-    for (size_t i = 1; i < vec_size; ++i) {
-        prefix_sum[i] = circ.addGate(common::utils::GateType::kAdd, prefix_sum[i - 1], reordered_data[i]);
-    }
+    if (in) {
+        prefix_sum[vec_size - 1] = reordered_data[vec_size - 1];
+        for (int i = static_cast<int>(vec_size) - 2; i >= 0; --i) {
+            prefix_sum[i] = circ.addGate(common::utils::GateType::kAdd, prefix_sum[i + 1], reordered_data[i]);
+        }
+    } else {
+        prefix_sum[0] = reordered_data[0];
+        for (size_t i = 1; i < vec_size; ++i) {
+            prefix_sum[i] = circ.addGate(common::utils::GateType::kAdd, prefix_sum[i - 1], reordered_data[i]);
+        }
+    }    
 
     return prefix_sum;
 }

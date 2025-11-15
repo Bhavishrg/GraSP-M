@@ -82,6 +82,8 @@ namespace graphdb {
 
     void rewireEvaluate(const std::vector<common::utils::SIMDOGate> &rewire_gates);
 
+    void deleteWiresEvaluate(const std::vector<common::utils::SIMDOGate> &delete_gates);
+
     std::vector<Ring> getOutputs();
 
     Ring reconstruct(AddShare<Ring> &shares);

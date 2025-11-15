@@ -108,6 +108,8 @@ struct DistributedDaglist {
     vector<vector<Ring>> isChangeV; // ChangeV[i][j] = 1/0 indicating if j-th vertex of party i is changed
     vector<vector<Ring>> ChangeE;   // ChangeE[i][j] = data change for j-th edge of party i
     vector<vector<Ring>> isChangeE; // ChangeE[i][j] = 1/0 indicating if j-th edge of party i is changed
+    vector<vector<Ring>> isDelV; // ChangeE[i][j] = 1/0 indicating if j-th edge of party i is changed
+    vector<vector<Ring>> isDelE; // ChangeE[i][j] = 1/0 indicating if j-th edge of party i is changed
 
     DistributedDaglist() : num_clients(0), nV(0), nE(0) {}
     
@@ -124,6 +126,8 @@ struct DistributedDaglist {
         ChangeE.resize(np);
         isChangeV.resize(np);
         isChangeE.resize(np);
+        isDelV.resize(np);
+        isDelE.resize(np);
     }
     
     DistributedDaglist(int np, int total_nV, int total_nE) 
@@ -140,6 +144,8 @@ struct DistributedDaglist {
         ChangeE.resize(np);
         isChangeV.resize(np);
         isChangeE.resize(np);
+        isDelV.resize(np);
+        isDelE.resize(np);
     }
     
     // Get all entries (vertices + edges) for a specific party
@@ -628,6 +634,71 @@ inline DistributedDaglist generate_random_data_updates(const DistributedDaglist&
     } else {
       result.ChangeE[entry.party_id][entry.local_idx] = new_data;
       result.isChangeE[entry.party_id][entry.local_idx] = 1;
+    }
+  }
+  
+  return result;
+}
+
+// Generate random deletion tags for vertices and edges in a DistributedDaglist
+// Returns a DistributedDaglist with isDelV and isDelE populated
+// isDelV[i][j] = 1 if j-th vertex of party i should be deleted, 0 otherwise
+// isDelE[i][j] = 1 if j-th edge of party i should be deleted, 0 otherwise
+// Input: dist_daglist - the distributed daglist
+//        num_deletes - total number of entries to delete across all parties
+//        seed - random seed for reproducibility
+inline DistributedDaglist generate_random_entry_deletes(const DistributedDaglist& dist_daglist, 
+                                                        Ring num_deletes, 
+                                                        Ring seed = 42) {
+  
+  // Copy the input distributed daglist
+  DistributedDaglist result = dist_daglist;
+  
+  // Initialize isDelV and isDelE with zeros
+  for (int p = 0; p < result.num_clients; ++p) {
+    result.isDelV[p].resize(result.VSizes[p], 0);
+    result.isDelE[p].resize(result.ESizes[p], 0);
+  }
+  
+  if (num_deletes == 0 || dist_daglist.totalSize() == 0) {
+    return result;
+  }
+  
+  std::mt19937_64 rng(seed);
+  
+  // Collect all possible entries to delete (party_id, is_vertex, local_idx)
+  struct EntryLocation {
+    int party_id;
+    bool is_vertex;
+    Ring local_idx;
+  };
+  
+  std::vector<EntryLocation> all_entries;
+  for (int p = 0; p < dist_daglist.num_clients; ++p) {
+    for (Ring i = 0; i < dist_daglist.VSizes[p]; ++i) {
+      all_entries.push_back({p, true, i});
+    }
+    for (Ring i = 0; i < dist_daglist.ESizes[p]; ++i) {
+      all_entries.push_back({p, false, i});
+    }
+  }
+  
+  if (all_entries.empty()) {
+    return result;
+  }
+  
+  // Sample num_deletes entries randomly without replacement
+  Ring actual_deletes = std::min(num_deletes, static_cast<Ring>(all_entries.size()));
+  std::shuffle(all_entries.begin(), all_entries.end(), rng);
+  
+  // Mark entries for deletion
+  for (Ring i = 0; i < actual_deletes; ++i) {
+    const auto& entry = all_entries[i];
+    
+    if (entry.is_vertex) {
+      result.isDelV[entry.party_id][entry.local_idx] = 1;
+    } else {
+      result.isDelE[entry.party_id][entry.local_idx] = 1;
     }
   }
   

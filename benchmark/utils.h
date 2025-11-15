@@ -48,7 +48,7 @@ std::vector<common::utils::wire_t> addSubCircPropagate(
     const std::vector<common::utils::wire_t>& position_map_shares,
     const std::vector<common::utils::wire_t>& data_values,
     size_t num_groups,
-    std::vector<std::vector<int>> permutation);
+    std::vector<std::vector<int>> permutation, bool in = false);
 
 std::vector<common::utils::wire_t> addSubCircGather(
     common::utils::Circuit<common::utils::Ring>& circ,

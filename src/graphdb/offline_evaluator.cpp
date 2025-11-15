@@ -926,6 +926,49 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+        case common::utils::GateType::kDeleteWires: {
+          // Delete wires gate preprocessing: shuffle for del + payloads, then reconstruction
+          auto *delete_g = static_cast<common::utils::SIMDOGate *>(gate.get());
+          // Input format: [del_0,...,del_n, p1_0,...,p1_n, p2_0,...,p2_n, ...]
+          // Output format: [p1_out_0,...,p1_out_n, p2_out_0,...,p2_out_n, ...] (compacted)
+          
+          size_t vec_size = delete_g->vec_size;
+          size_t total_size = delete_g->in.size();
+          size_t num_payloads = (total_size / vec_size) - 1;
+          
+          // Shuffle operates on vec_size elements
+          // Preprocessing for shuffle operation (del + all payloads together)
+          std::vector<AddShare<Ring>> shuffle_a(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_a(vec_size);
+          std::vector<AddShare<Ring>> shuffle_b(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_b(vec_size);
+          std::vector<AddShare<Ring>> shuffle_c(vec_size);
+          std::vector<TPShare<Ring>> shuffle_tp_c(vec_size);
+          
+          for (size_t i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, shuffle_a[i], shuffle_tp_a[i]);
+            randomShare(nP_, id_, rgen_, shuffle_b[i], shuffle_tp_b[i]);
+            randomShare(nP_, id_, rgen_, shuffle_c[i], shuffle_tp_c[i]);
+          }
+          
+          std::vector<int> shuffle_pi;
+          std::vector<std::vector<int>> shuffle_tp_pi_all;
+          if (id_ != 0) {
+            shuffle_pi = std::move(delete_g->permutation[0]);
+          } else {
+            shuffle_tp_pi_all = std::move(delete_g->permutation);
+          }
+          
+          std::vector<Ring> shuffle_delta(vec_size);
+          generateShuffleDeltaVector(nP_, id_, rgen_, shuffle_delta, shuffle_tp_a, shuffle_tp_b, shuffle_tp_c,
+                                    shuffle_tp_pi_all, vec_size, rand_sh_sec, idx_rand_sh_sec);
+          
+          preproc_.gates[gate->out] = std::move(std::make_unique<PreprocDeleteWiresGate<Ring>>(
+              shuffle_a, shuffle_tp_a, shuffle_b, shuffle_tp_b, shuffle_c, shuffle_tp_c,
+              shuffle_delta, shuffle_pi, shuffle_tp_pi_all));
+          break;
+        }
+
         default: {
           break;
         }
