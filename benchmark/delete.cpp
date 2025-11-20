@@ -111,7 +111,6 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     
     }
 
-
     // Generate permutation for shuffle
     // Here we just pass identity permutations
     std::vector<int> base_perm(nV + nE);
@@ -127,6 +126,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     }
 
     // Generate flat daglist
+    auto zerowire = circ.addGate(kSub, vertex_src_values[0][0], vertex_src_values[0][0]);
     std::vector<wire_t> src(nV + nE);
     std::vector<wire_t> dst(nV + nE);
     std::vector<wire_t> isV(nV + nE);
@@ -134,7 +134,8 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     std::vector<wire_t> sigs(nV + nE);
     std::vector<wire_t> sigv(nV + nE);
     std::vector<wire_t> sigd(nV + nE);
-    std::vector<wire_t> del(nV + nE);
+    std::vector<wire_t> del_v(nV + nE);
+    std::vector<wire_t> del_e(nV + nE);
 
     int index = 0;
     
@@ -148,7 +149,8 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
             sigs[index] = vertex_sigs_values[i][j];
             sigv[index] = vertex_sigv_values[i][j];
             sigd[index] = vertex_sigd_values[i][j];
-            del[index] = vertex_deleted[i][j];
+            del_v[index] = vertex_deleted[i][j];
+            del_e[index] = zerowire;
             index++;
         }
     }
@@ -163,35 +165,37 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
             sigs[index] = edge_sigs_values[i][j];
             sigv[index] = edge_sigv_values[i][j];
             sigd[index] = edge_sigd_values[i][j];
-            del[index] = edge_deleted[i][j];
+            del_v[index] = zerowire;
+            del_e[index] = edge_deleted[i][j];
             index++;
         }
     }
 
     // Propagate del tag to outgoing edges and reorder them back to vertex order
-    auto del_S = addSubCircPropagate(circ, sigs, del, nV, permutation);
+    auto del_S = addSubCircPropagate(circ, sigs, del_v, nV, permutation);
     // reorder del_S to vertex order
     auto sigs_to_sigv = addSubCircPermList(circ, sigs, {sigv}, permutation)[0];
     del_S = addSubCircPermList(circ, sigs_to_sigv, {del_S}, permutation)[0];
 
     // Propagate del tag to incoming edges and reorder them back to vertex order
-    auto del_D = addSubCircPropagate(circ, sigd, del, nV, permutation, true);
+    auto del_D = addSubCircPropagate(circ, sigd, del_v, nV, permutation, true);
     auto sigd_to_sigv = addSubCircPermList(circ, sigd, {sigv}, permutation)[0];
-    del_S = addSubCircPermList(circ, sigd_to_sigv, {del_S}, permutation)[0];
+    del_D = addSubCircPermList(circ, sigd_to_sigv, {del_D}, permutation)[0];
 
     // Combine del tags
     std::vector<wire_t> del_final(vec_size);
     for (size_t i = 0; i < vec_size; ++i) {
         auto temp = circ.addGate(common::utils::GateType::kAdd, del_S[i], del_D[i]);
         
-        // temp = circ.addGate(common::utils::GateType::kAdd, del[i], temp); \\ not required as del_S and del_D already include del[i]
+        temp = circ.addGate(common::utils::GateType::kAdd, del_e[i], temp); 
         
         temp = circ.addGate(common::utils::GateType::kEqz, temp);
+        del_final[i] = temp;
         temp = circ.addConstOpGate(common::utils::GateType::kConstMul, temp, Ring(-1));
         del_final[i] = circ.addConstOpGate(common::utils::GateType::kConstAdd, temp, Ring(1));
     }
 
-    // Update sigv
+    // // Update sigv
     std::vector<wire_t> updated_sigv(vec_size);
     updated_sigv[0] = sigv[0];
     wire_t prefix_sum = del_final[0];
@@ -200,7 +204,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
         prefix_sum = circ.addGate(common::utils::GateType::kAdd, prefix_sum, del_final[i]);
     }
 
-    // Combine graph vectors into single payload
+    // // Combine graph vectors into single payload
     std::vector<std::vector<wire_t>> payload1;
     payload1.reserve(2);
     payload1.push_back(sigs);              
@@ -211,11 +215,11 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     payload2.push_back(sigd);              
     payload2.push_back(del_final);
 
-    // Reorder to source order and destination order
+    // // Reorder to source order and destination order
     auto payload_s = addSubCircPermList(circ, sigs, payload1, permutation);
     auto payload_d = addSubCircPermList(circ, sigd, payload2, permutation);
 
-    // Update sigs
+    // // Update sigs
     std::vector<wire_t> updated_sigs(vec_size);
     std::vector<wire_t> sigs_old = payload_s[0];
     std::vector<wire_t> del_s = payload_s[1];
@@ -225,22 +229,22 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     
     for (size_t i = 1; i < vec_size; ++i) {
         updated_sigs[i] = circ.addGate(common::utils::GateType::kSub, sigs_old[i], prefix_sum_s);
-        prefix_sum_s = circ.addGate(common::utils::GateType::kAdd, prefix_sum, del_s[i]);
+        prefix_sum_s = circ.addGate(common::utils::GateType::kAdd, prefix_sum_s, del_s[i]);
     }
     payload_s[0] = updated_sigs; 
     payload_s = addSubCircPermList(circ, sigs_to_sigv, payload_s, permutation);
     updated_sigs = payload_s[0];
 
-    // Update sigd
+    // // Update sigd
     std::vector<wire_t> updated_sigd(vec_size);
     std::vector<wire_t> sigd_old = payload_d[0];
     std::vector<wire_t> del_d = payload_d[1];
-    wire_t prefix_sum_d(vec_size);
+    wire_t prefix_sum_d;
     updated_sigd[0] = sigd_old[0];
     prefix_sum_d = del_d[0];
     for (size_t i = 1; i < vec_size; ++i) {
         updated_sigd[i] = circ.addGate(common::utils::GateType::kSub, sigd_old[i], prefix_sum_d);
-        prefix_sum_d = circ.addGate(common::utils::GateType::kAdd, prefix_sum, del_s[i]);
+        prefix_sum_d = circ.addGate(common::utils::GateType::kAdd, prefix_sum_d, del_d[i]);
     }
     payload_d[0] = updated_sigd; 
     payload_d = addSubCircPermList(circ, sigs_to_sigv, payload_d, permutation);
@@ -256,7 +260,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
 
     auto [num_remaining, payload1_deleted] = circ.addDeleteWiresGate(del_final, payload1, permutation);
 
-    // split graph vectors back to clients
+    // Get compacted vectors (these have dynamic size = num_remaining)
     auto src_compacted = payload1_deleted[0];
     auto dst_compacted = payload1_deleted[1];
     auto data_compacted = payload1_deleted[2];
@@ -264,88 +268,18 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, DistributedDaglist
     auto sigs_compacted = payload1_deleted[4];
     auto sigd_compacted = payload1_deleted[5];
     
-    // Initialize client subgraph vectors (to be updated)
-    std::vector<std::vector<wire_t>> updated_vertex_src(nC);
-    std::vector<std::vector<wire_t>> updated_vertex_dst(nC);
-    std::vector<std::vector<wire_t>> updated_vertex_data(nC);
-    std::vector<std::vector<wire_t>> updated_vertex_sigv(nC);
-    std::vector<std::vector<wire_t>> updated_vertex_sigs(nC);
-    std::vector<std::vector<wire_t>> updated_vertex_sigd(nC);
-    
-    std::vector<std::vector<wire_t>> updated_edge_src(nC);
-    std::vector<std::vector<wire_t>> updated_edge_dst(nC);
-    std::vector<std::vector<wire_t>> updated_edge_data(nC);
-    std::vector<std::vector<wire_t>> updated_edge_sigv(nC);
-    std::vector<std::vector<wire_t>> updated_edge_sigs(nC);
-    std::vector<std::vector<wire_t>> updated_edge_sigd(nC);
-    
-    // Split compacted vectors back to clients
-    // The compacted vectors maintain the original order: first all vertices, then all edges
-    // We need to distribute them back to clients based on original VSizes and ESizes
-    int vertex_index = 0;
-    int edge_index = nV; // Edges start after vertices in the compacted vector
-    
-    for (int i = 0; i < nC; ++i) {
-        // Allocate space for this client's vertices
-        updated_vertex_src[i].resize(VSizes[i]);
-        updated_vertex_dst[i].resize(VSizes[i]);
-        updated_vertex_data[i].resize(VSizes[i]);
-        updated_vertex_sigv[i].resize(VSizes[i]);
-        updated_vertex_sigs[i].resize(VSizes[i]);
-        updated_vertex_sigd[i].resize(VSizes[i]);
-        
-        // Copy vertices for this client
-        for (int j = 0; j < VSizes[i]; ++j) {
-            updated_vertex_src[i][j] = src_compacted[vertex_index];
-            updated_vertex_dst[i][j] = dst_compacted[vertex_index];
-            updated_vertex_data[i][j] = data_compacted[vertex_index];
-            updated_vertex_sigv[i][j] = sigv_compacted[vertex_index];
-            updated_vertex_sigs[i][j] = sigs_compacted[vertex_index];
-            updated_vertex_sigd[i][j] = sigd_compacted[vertex_index];
-            vertex_index++;
-        }
-        
-        // Allocate space for this client's edges
-        updated_edge_src[i].resize(ESizes[i]);
-        updated_edge_dst[i].resize(ESizes[i]);
-        updated_edge_data[i].resize(ESizes[i]);
-        updated_edge_sigv[i].resize(ESizes[i]);
-        updated_edge_sigs[i].resize(ESizes[i]);
-        updated_edge_sigd[i].resize(ESizes[i]);
-        
-        // Copy edges for this client
-        for (int j = 0; j < ESizes[i]; ++j) {
-            updated_edge_src[i][j] = src_compacted[edge_index];
-            updated_edge_dst[i][j] = dst_compacted[edge_index];
-            updated_edge_data[i][j] = data_compacted[edge_index];
-            updated_edge_sigv[i][j] = sigv_compacted[edge_index];
-            updated_edge_sigs[i][j] = sigs_compacted[edge_index];
-            updated_edge_sigd[i][j] = sigd_compacted[edge_index];
-            edge_index++;
-        }
-    }
     
     // Set outputs
     circ.setAsOutput(num_remaining);
-    for (int i = 0; i < nC; ++i){
-
-        for (int j = 0; j < VSizes[i]; ++j){
-            circ.setAsOutput(updated_vertex_src[i][j]);
-            circ.setAsOutput(updated_vertex_dst[i][j]);
-            circ.setAsOutput(updated_vertex_data[i][j]);
-            circ.setAsOutput(updated_vertex_sigv[i][j]);
-            circ.setAsOutput(updated_vertex_sigs[i][j]);
-            circ.setAsOutput(updated_vertex_sigd[i][j]);
-        }
-
-        for (int j = 0; j < ESizes[i]; ++j){
-            circ.setAsOutput(updated_edge_src[i][j]);
-            circ.setAsOutput(updated_edge_dst[i][j]);
-            circ.setAsOutput(updated_edge_data[i][j]);
-            circ.setAsOutput(updated_edge_sigv[i][j]);
-            circ.setAsOutput(updated_edge_sigs[i][j]);
-            circ.setAsOutput(updated_edge_sigd[i][j]);
-        }
+    // Output all compacted entries (vertices + edges after deletion)
+    // The compacted vectors maintain vertex-order: vertices first, then edges
+    for (size_t i = 0; i < vec_size; ++i) {
+        circ.setAsOutput(src_compacted[i]);
+        circ.setAsOutput(dst_compacted[i]);
+        circ.setAsOutput(data_compacted[i]);
+        circ.setAsOutput(sigv_compacted[i]);
+        circ.setAsOutput(sigs_compacted[i]);
+        circ.setAsOutput(sigd_compacted[i]);
     }
 
     return circ;
@@ -408,8 +342,8 @@ void benchmark(const bpo::variables_map& opts) {
     
     std::cout << "============================\n" << std::endl;
     std::cout << "Generating random inputs " << std::endl;
-    std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << std::endl;
-    auto edges = generate_scale_free(nV, nE);
+    std::cout << "Generating scale-free graph with nV=" << nV << ", nE=" << nE << " (seed=" << seed << ")" << std::endl;
+    auto edges = generate_scale_free(nV, nE, seed);
     std::cout << "Generated " << edges.size() << " edges" << std::endl;
     
     std::cout << "Building daglist..." << std::endl;
@@ -509,7 +443,7 @@ void benchmark(const bpo::variables_map& opts) {
         }
     }
         
-        // Map collected values into circuit input wires (in order)
+                // Map collected values into circuit input wires (in order)
         size_t wire_idx = 0;
         for (size_t i = 0; i < all_input_values.size() && wire_idx < input_wires.size(); ++i) {
             inputs[input_wires[wire_idx++]] = all_input_values[i];
@@ -519,7 +453,7 @@ void benchmark(const bpo::variables_map& opts) {
         graph_input_values = all_input_values;
         
         std::cout << "\n=== DEBUG: First 20 inputs being set ===" << std::endl;
-        size_t debug_count = std::min(size_t(20), all_input_values.size());
+        size_t debug_count = std::min(size_t(100), all_input_values.size());
         for (size_t i = 0; i < debug_count; ++i) {
             std::cout << "Input[" << i << "] = " << all_input_values[i] << std::endl;
         }
@@ -555,124 +489,20 @@ void benchmark(const bpo::variables_map& opts) {
     
 
 
-    if (pid == 1 && outputs.size() > 0) {
+    if (outputs.size() > 0) {
+        std::cout << "\n=== DEBUG: Party " << pid << " outputs ===" << std::endl;
+        std::cout << "Total outputs: " << outputs.size() << std::endl;
+        
+        if (pid == 1 && outputs.size() > 0) {
         std::cout << "\n=== DEBUG: First 20 raw outputs ===" << std::endl;
-        for (size_t i = 0; i < std::min(size_t(20), outputs.size()); ++i) {
+        for (size_t i = 0; i < std::min(size_t(100), outputs.size()); ++i) {
             std::cout << "Output[" << i << "] = " << outputs[i] << std::endl;
         }
         std::cout << "===================================\n" << std::endl;
-    }
-
-
-    // First output is num_remaining
-    Ring num_remaining = 0;
-    size_t output_idx = 0;
-    if (output_idx < outputs.size()) {
-        num_remaining = outputs[output_idx++];
-    }
-    
-    // Update the distributed daglist with output values (after compaction)
-    // Outputs are interleaved per entry: for each vertex/edge, 6 fields (src, dst, data, sigv, sigs, sigd)
-    for (int c = 0; c < nC; ++c) {
-        // Parse vertex outputs - fields are interleaved per vertex
-        for (size_t i = 0; i < dist_daglist.VSizes[c]; ++i) {
-            if (output_idx < outputs.size()) dist_daglist.VertexLists[c][i].src = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.VertexLists[c][i].dst = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.VertexLists[c][i].data = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.VertexLists[c][i].sigv = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.VertexLists[c][i].sigs = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.VertexLists[c][i].sigd = outputs[output_idx++];
         }
-        
-        // Parse edge outputs - fields are interleaved per edge
-        for (size_t i = 0; i < dist_daglist.ESizes[c]; ++i) {
-            if (output_idx < outputs.size()) dist_daglist.EdgeLists[c][i].src = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.EdgeLists[c][i].dst = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.EdgeLists[c][i].data = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.EdgeLists[c][i].sigv = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.EdgeLists[c][i].sigs = outputs[output_idx++];
-            if (output_idx < outputs.size()) dist_daglist.EdgeLists[c][i].sigd = outputs[output_idx++];
-        }
-    }
-
-    // Print example inputs and outputs
-    if (pid == 1) {  // Only print from party 1 to avoid duplicate output
-        std::cout << "\n=== DELETION RESULTS ===" << std::endl;
-        std::cout << "Number of remaining entries: " << num_remaining << std::endl;
-        std::cout << "Original total entries: " << vec_size << std::endl;
-        std::cout << "Entries deleted: " << (vec_size - num_remaining) << std::endl;
-        
-        std::cout << "\n--- First 5 Vertices (Client 0) ---" << std::endl;
-        
-        if (nC > 0 && dist_daglist.VSizes[0] > 0) {
-            size_t print_count = std::min(size_t(5), static_cast<size_t>(dist_daglist.VSizes[0]));
-            
-            for (size_t i = 0; i < print_count; ++i) {
-                // Input: 8 fields per vertex (interleaved)
-                size_t input_base = i * 8;
-                size_t output_base = 1 + i * 6;  // +1 for num_remaining
-                
-                if (input_base + 7 < graph_input_values.size()) {
-                    Ring in_src = graph_input_values[input_base + 0];
-                    Ring in_dst = graph_input_values[input_base + 1];
-                    Ring in_isV = graph_input_values[input_base + 2];
-                    Ring in_data = graph_input_values[input_base + 3];
-                    Ring del_tag = graph_input_values[input_base + 7];
-                    
-                    std::cout << "  Vertex[" << i << "]: "
-                              << "src=" << in_src
-                              << ", dst=" << in_dst
-                              << ", data=" << in_data
-                              << ", Deleted=" << (del_tag == 1 ? "YES" : "NO")
-                              << std::endl;
-                }
-            }
-        }
-        
-        std::cout << "\n--- First 5 Edges (Client 0) ---" << std::endl;
-        
-        if (nC > 0 && dist_daglist.ESizes[0] > 0) {
-            // Edges start after all vertices in input array
-            size_t input_edge_base = dist_daglist.VSizes[0] * 8;
-            
-            size_t print_count = std::min(size_t(5), static_cast<size_t>(dist_daglist.ESizes[0]));
-            
-            for (size_t i = 0; i < print_count; ++i) {
-                // Input: 8 fields per edge (interleaved)
-                size_t input_base = input_edge_base + i * 8;
-                
-                if (input_base + 7 < graph_input_values.size()) {
-                    Ring in_src = graph_input_values[input_base + 0];
-                    Ring in_dst = graph_input_values[input_base + 1];
-                    Ring in_isV = graph_input_values[input_base + 2];
-                    Ring in_data = graph_input_values[input_base + 3];
-                    Ring del_tag = graph_input_values[input_base + 7];
-                    
-                    std::cout << "  Edge[" << i << "]: "
-                              << "src=" << in_src
-                              << ", dst=" << in_dst
-                              << ", data=" << in_data
-                              << ", Deleted=" << (del_tag == 1 ? "YES" : "NO")
-                              << std::endl;
-                }
-            }
-        }
-        
-        size_t total_vertices = 0;
-        size_t total_edges = 0;
-        for (int c = 0; c < nC; ++c) {
-            total_vertices += dist_daglist.VSizes[c];
-            total_edges += dist_daglist.ESizes[c];
-        }
-        
-        std::cout << "\n--- Summary ---" << std::endl;
-        std::cout << "Total inputs: " << graph_input_values.size() << std::endl;
-        std::cout << "Total outputs: " << outputs.size() << std::endl;
-        std::cout << "Total vertices: " << total_vertices << std::endl;
-        std::cout << "Total edges: " << total_edges << std::endl;
-        std::cout << "Number of clients: " << nC << std::endl;
         std::cout << "===================================\n" << std::endl;
     }
+
 
     StatsPoint end(*network);
 

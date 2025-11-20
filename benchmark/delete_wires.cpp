@@ -332,4 +332,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
-// delete_wires -n 2 -v 100 --num-payloads 2
+// ./../run.sh delete_wires -n 2 -v 100 --num-payloads 2

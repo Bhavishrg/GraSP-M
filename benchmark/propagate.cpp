@@ -46,7 +46,7 @@ common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, s
     std::generate(data_values.begin(), data_values.end(), [&]() { return circ.newInputWire(); });
 
     // Use utility function to add propagate sub-circuit
-    auto prefix_sum = addSubCircPropagate(circ, position_map_shares, data_values, num_groups, permutation, true);
+    auto prefix_sum = addSubCircPropagate(circ, position_map_shares, data_values, num_groups, permutation);
 
     // Set outputs
     for (size_t i = 0; i < vec_size; ++i) {
@@ -154,16 +154,16 @@ void benchmark(const bpo::variables_map& opts) {
         // Create a test position map (identity permutation for simplicity)
         std::vector<Ring> position_map_values(vec_size);
 
-        position_map_values[0] = static_cast<Ring>(3);
-        position_map_values[1] = static_cast<Ring>(5);
-        position_map_values[2] = static_cast<Ring>(7);
+        position_map_values[0] = static_cast<Ring>(0);
+        position_map_values[1] = static_cast<Ring>(3);
+        position_map_values[2] = static_cast<Ring>(5);
         position_map_values[3] = static_cast<Ring>(9);
-        position_map_values[4] = static_cast<Ring>(0);
-        position_map_values[5] = static_cast<Ring>(1);
-        position_map_values[6] = static_cast<Ring>(2);
-        position_map_values[7] = static_cast<Ring>(4);
-        position_map_values[8] = static_cast<Ring>(6);
-        position_map_values[9] = static_cast<Ring>(8);
+        position_map_values[4] = static_cast<Ring>(1);
+        position_map_values[5] = static_cast<Ring>(8);
+        position_map_values[6] = static_cast<Ring>(6);
+        position_map_values[7] = static_cast<Ring>(7);
+        position_map_values[8] = static_cast<Ring>(4);
+        position_map_values[9] = static_cast<Ring>(2);
 
         for (size_t i = 10; i < vec_size; ++i) {
             position_map_values[i] = static_cast<Ring>(i);
@@ -172,7 +172,16 @@ void benchmark(const bpo::variables_map& opts) {
         // Create test data values (incremental values)
         std::vector<Ring> data_values(vec_size);
         for (size_t i = 0; i < vec_size; ++i) {
-            data_values[i] = static_cast<Ring>((i + 1) * 10);
+            data_values[0] = static_cast<Ring>(0);
+            data_values[1] = static_cast<Ring>(1);
+            data_values[2] = static_cast<Ring>(0);
+            data_values[3] = static_cast<Ring>(0);
+            data_values[4] = static_cast<Ring>(0);
+            data_values[5] = static_cast<Ring>(1);
+            data_values[6] = static_cast<Ring>(0);
+            data_values[7] = static_cast<Ring>(0);
+            data_values[8] = static_cast<Ring>(0);
+            data_values[9] = static_cast<Ring>(0);
         }
         
         // Set position map inputs
@@ -339,4 +348,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
-// usage: ./../run.sh propagate --num-parties 2 --nvec-size 10 -num-groups 4
+// usage: ./../run.sh propagate --num-parties 2 --vec-size 10 --num-groups 4

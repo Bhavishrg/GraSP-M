@@ -3472,8 +3472,6 @@ namespace graphdb
                     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
                     auto vec_len = g->in.size();
                     
-                    std::cout << "PublicPerm gate with vec_len: " << vec_len << std::endl;
-                    std::cout << "  Output wires: ";
                     for (int i = 0; i < vec_len; ++i) {
                         std::cout << g->outs[i] << " ";
                     }
@@ -3487,22 +3485,13 @@ namespace graphdb
                             common::utils::wire_t wire_id = static_cast<common::utils::wire_t>(-idx_perm - 1);
                             Ring wire_value = wires_[wire_id];
                             idx_perm = static_cast<int>(wire_value);
-                            std::cout << "  Input " << i << " (wire " << g->in[i] << " = " << wires_[g->in[i]] 
-                                      << ") -> dynamic idx from wire " << wire_id << " (value=" << wire_value << ", as_int=" << idx_perm 
-                                      << ") -> output wire " << g->outs[idx_perm] << std::endl;
-                        } else {
-                            std::cout << "  Input " << i << " (wire " << g->in[i] << " = " << wires_[g->in[i]] 
-                                      << ") -> static idx " << idx_perm 
-                                      << " -> output wire " << g->outs[idx_perm] << std::endl;
                         }
                         temp_outputs[g->outs[idx_perm]] = wires_[g->in[i]];
                     }
                     
-                    std::cout << "size of temp_outputs: " << temp_outputs.size() << std::endl;
                     // Then, write all outputs at once
                     for (const auto& [wire_id, value] : temp_outputs) {
                         wires_[wire_id] = value;
-                        std::cout << "Perm gate at depth " << depth << " output wire " << wire_id << " set to " << value << std::endl;
                     }
                     break;
                 }

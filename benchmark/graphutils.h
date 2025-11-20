@@ -241,7 +241,7 @@ static inline Ring pack_pair(Ring a, Ring b) {
   return (a << 32) | b;
 }
 
-inline vector<pair<Ring, Ring>> generate_scale_free(Ring nV, Ring nE) {
+inline vector<pair<Ring, Ring>> generate_scale_free(Ring nV, Ring nE, Ring fixed_seed = 42) {
   vector<pair<Ring, Ring>> edges;
   if (nV == 0 || nE == 0) return edges;
 
@@ -256,7 +256,7 @@ inline vector<pair<Ring, Ring>> generate_scale_free(Ring nV, Ring nE) {
   seen.reserve(nE * 2 + 10);
   mutex edgeMutex, degreeMutex;
 
-  Ring seed = (Ring)chrono::high_resolution_clock::now().time_since_epoch().count();
+  Ring seed = fixed_seed;
 
   #pragma omp parallel
   {

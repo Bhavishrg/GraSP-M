@@ -240,4 +240,4 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     return 0;
-}
+} // ./../run.sh equality -n 2 -i 5 
