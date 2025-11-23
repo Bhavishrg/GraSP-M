@@ -112,184 +112,32 @@ struct PreprocPermAndShGate : public PreprocGate<R> {
       : PreprocGate<R>(), a(a), tp_a(tp_a), b(b), tp_b(tp_b), delta(delta), pi(pi), tp_pi_all(tp_pi_all), pi_common(pi_common) {}
 };
 
+
 template <class R>
-struct PreprocCompactGate : public PreprocGate<R> {
-  // Preprocessing for shuffle operations
-  std::vector<AddShare<R>> shuffle_a;
-  std::vector<TPShare<R>> shuffle_tp_a;
-  std::vector<AddShare<R>> shuffle_b;
-  std::vector<TPShare<R>> shuffle_tp_b;
-  std::vector<AddShare<R>> shuffle_c;
-  std::vector<TPShare<R>> shuffle_tp_c;
-  std::vector<Ring> shuffle_delta;
-  std::vector<int> shuffle_pi;
-  std::vector<std::vector<int>> shuffle_tp_pi_all;
+struct PreprocAmortzdPnSGate : public PreprocGate<R> {
+  // Shares of random mask R (size = vec_size)
+  std::vector<AddShare<R>> mask_R;      // This party's additive shares of R
+  std::vector<TPShare<R>> tp_mask_R;    // All parties' shares of R
   
-  // Preprocessing for multiplications
-  std::vector<AddShare<R>> mult_triple_a;
-  std::vector<TPShare<R>> mult_tp_triple_a;
-  std::vector<AddShare<R>> mult_triple_b;
-  std::vector<TPShare<R>> mult_tp_triple_b;
-  std::vector<AddShare<R>> mult_triple_c;
-  std::vector<TPShare<R>> mult_tp_triple_c;
+  // Shares of permuted masks π_i(R) for each party i (size = nP x vec_size)
+  // permuted_masks[i] contains shares of π_i(R)
+  std::vector<std::vector<AddShare<R>>> permuted_masks;      // This party's additive shares of π_i(R)
+  std::vector<std::vector<TPShare<R>>> tp_permuted_masks;    // All parties' shares of π_i(R)
   
-  PreprocCompactGate() = default;
-  PreprocCompactGate(const std::vector<AddShare<R>>& shuffle_a, const std::vector<TPShare<R>>& shuffle_tp_a,
-                     const std::vector<AddShare<R>>& shuffle_b, const std::vector<TPShare<R>>& shuffle_tp_b,
-                     const std::vector<AddShare<R>>& shuffle_c, const std::vector<TPShare<R>>& shuffle_tp_c,
-                     const std::vector<R>& shuffle_delta, const std::vector<int>& shuffle_pi,
-                     const std::vector<std::vector<int>>& shuffle_tp_pi_all,
-                     const std::vector<AddShare<R>>& mult_triple_a, const std::vector<TPShare<R>>& mult_tp_triple_a,
-                     const std::vector<AddShare<R>>& mult_triple_b, const std::vector<TPShare<R>>& mult_tp_triple_b,
-                     const std::vector<AddShare<R>>& mult_triple_c, const std::vector<TPShare<R>>& mult_tp_triple_c)
-      : PreprocGate<R>(), shuffle_a(shuffle_a), shuffle_tp_a(shuffle_tp_a), shuffle_b(shuffle_b), shuffle_tp_b(shuffle_tp_b),
-        shuffle_c(shuffle_c), shuffle_tp_c(shuffle_tp_c), shuffle_delta(shuffle_delta), shuffle_pi(shuffle_pi),
-        shuffle_tp_pi_all(shuffle_tp_pi_all), mult_triple_a(mult_triple_a), mult_tp_triple_a(mult_tp_triple_a),
-        mult_triple_b(mult_triple_b), mult_tp_triple_b(mult_tp_triple_b), mult_triple_c(mult_triple_c),
-        mult_tp_triple_c(mult_tp_triple_c) {}
+  size_t vec_size;  // Size of input vector
+  size_t nP;        // Number of parties
+  
+  PreprocAmortzdPnSGate() = default;
+  PreprocAmortzdPnSGate(const std::vector<AddShare<R>>& mask_R,
+                        const std::vector<TPShare<R>>& tp_mask_R,
+                        const std::vector<std::vector<AddShare<R>>>& permuted_masks,
+                        const std::vector<std::vector<TPShare<R>>>& tp_permuted_masks,
+                        size_t vec_size, size_t nP)
+      : PreprocGate<R>(), mask_R(mask_R), tp_mask_R(tp_mask_R),
+        permuted_masks(permuted_masks), tp_permuted_masks(tp_permuted_masks),
+        vec_size(vec_size), nP(nP) {}
 };
 
-// Preprocessing for Group-wise Index gate
-// Uses two compact operations and multiplication triples for secure multiplications
-template <class R>
-struct PreprocGroupwiseIndexGate : public PreprocGate<R> {
-  // First compaction preprocessing (for key vector)
-  std::vector<AddShare<R>> shuffle_a;
-  std::vector<TPShare<R>> shuffle_tp_a;
-  std::vector<AddShare<R>> shuffle_b;
-  std::vector<TPShare<R>> shuffle_tp_b;
-  std::vector<AddShare<R>> shuffle_c;
-  std::vector<TPShare<R>> shuffle_tp_c;
-  std::vector<Ring> shuffle_delta;
-  std::vector<int> shuffle_pi;
-  std::vector<std::vector<int>> shuffle_tp_pi_all;
-  std::vector<AddShare<R>> mult_triple_a;
-  std::vector<TPShare<R>> mult_tp_triple_a;
-  std::vector<AddShare<R>> mult_triple_b;
-  std::vector<TPShare<R>> mult_tp_triple_b;
-  std::vector<AddShare<R>> mult_triple_c;
-  std::vector<TPShare<R>> mult_tp_triple_c;
-  
-  // Reverse compaction preprocessing (shuffle only, no multiplication needed)
-  std::vector<AddShare<R>> revcompact_shuffle_a;
-  std::vector<TPShare<R>> revcompact_shuffle_tp_a;
-  std::vector<AddShare<R>> revcompact_shuffle_b;
-  std::vector<TPShare<R>> revcompact_shuffle_tp_b;
-  std::vector<AddShare<R>> revcompact_shuffle_c;
-  std::vector<TPShare<R>> revcompact_shuffle_tp_c;
-  std::vector<Ring> revcompact_shuffle_delta;
-  std::vector<int> revcompact_shuffle_pi;
-  std::vector<std::vector<int>> revcompact_shuffle_tp_pi_all;
-  
-  // Multiplication triples for key_c * key_compacted
-  std::vector<AddShare<R>> keymult_triple_a;
-  std::vector<TPShare<R>> keymult_tp_triple_a;
-  std::vector<AddShare<R>> keymult_triple_b;
-  std::vector<TPShare<R>> keymult_tp_triple_b;
-  std::vector<AddShare<R>> keymult_triple_c;
-  std::vector<TPShare<R>> keymult_tp_triple_c;
-  
-  PreprocGroupwiseIndexGate() = default;
-};
-
-// Preprocessing for Group-wise Propagate gate
-// Similar structure to GroupwiseIndex but with different multiplication semantics
-template <class R>
-struct PreprocGroupwisePropagateGate : public PreprocGate<R> {
-  // First compaction preprocessing (for T1 based on key)
-  std::vector<AddShare<R>> t1_shuffle_a;
-  std::vector<TPShare<R>> t1_shuffle_tp_a;
-  std::vector<AddShare<R>> t1_shuffle_b;
-  std::vector<TPShare<R>> t1_shuffle_tp_b;
-  std::vector<AddShare<R>> t1_shuffle_c;
-  std::vector<TPShare<R>> t1_shuffle_tp_c;
-  std::vector<Ring> t1_shuffle_delta;
-  std::vector<int> t1_shuffle_pi;
-  std::vector<std::vector<int>> t1_shuffle_tp_pi_all;
-  std::vector<AddShare<R>> t1_mult_triple_a;
-  std::vector<TPShare<R>> t1_mult_tp_triple_a;
-  std::vector<AddShare<R>> t1_mult_triple_b;
-  std::vector<TPShare<R>> t1_mult_tp_triple_b;
-  std::vector<AddShare<R>> t1_mult_triple_c;
-  std::vector<TPShare<R>> t1_mult_tp_triple_c;
-  
-  // Second compaction preprocessing (for T2 based on key)
-  std::vector<AddShare<R>> t2_shuffle_a;
-  std::vector<TPShare<R>> t2_shuffle_tp_a;
-  std::vector<AddShare<R>> t2_shuffle_b;
-  std::vector<TPShare<R>> t2_shuffle_tp_b;
-  std::vector<AddShare<R>> t2_shuffle_c;
-  std::vector<TPShare<R>> t2_shuffle_tp_c;
-  std::vector<Ring> t2_shuffle_delta;
-  std::vector<int> t2_shuffle_pi;
-  std::vector<std::vector<int>> t2_shuffle_tp_pi_all;
-  std::vector<AddShare<R>> t2_mult_triple_a;
-  std::vector<TPShare<R>> t2_mult_tp_triple_a;
-  std::vector<AddShare<R>> t2_mult_triple_b;
-  std::vector<TPShare<R>> t2_mult_tp_triple_b;
-  std::vector<AddShare<R>> t2_mult_triple_c;
-  std::vector<TPShare<R>> t2_mult_tp_triple_c;
-  
-  // Multiplication triples for difference * key computation in Step 3
-  std::vector<AddShare<R>> diff_mult_triple_a;
-  std::vector<TPShare<R>> diff_mult_tp_triple_a;
-  std::vector<AddShare<R>> diff_mult_triple_b;
-  std::vector<TPShare<R>> diff_mult_tp_triple_b;
-  std::vector<AddShare<R>> diff_mult_triple_c;
-  std::vector<TPShare<R>> diff_mult_tp_triple_c;
-  
-  // Reverse compaction preprocessing (for Step 4)
-  std::vector<AddShare<R>> revcompact_shuffle_a;
-  std::vector<TPShare<R>> revcompact_shuffle_tp_a;
-  std::vector<AddShare<R>> revcompact_shuffle_b;
-  std::vector<TPShare<R>> revcompact_shuffle_tp_b;
-  std::vector<AddShare<R>> revcompact_shuffle_c;
-  std::vector<TPShare<R>> revcompact_shuffle_tp_c;
-  std::vector<Ring> revcompact_shuffle_delta;
-  std::vector<int> revcompact_shuffle_pi;
-  std::vector<std::vector<int>> revcompact_shuffle_tp_pi_all;
-  
-  PreprocGroupwisePropagateGate() = default;
-};
-
-// Preprocessing for Sort gate
-// Contains 32 compaction operations (one for each bit from MSB to LSB)
-// Plus final shuffle for hiding the permutation before reconstruction
-template <class R>
-struct PreprocSortGate : public PreprocGate<R> {
-  // Array of 32 compaction preprocessing structures (one per bit)
-  // Index 0 corresponds to MSB (bit 31), index 31 corresponds to LSB (bit 0)
-  std::vector<std::vector<AddShare<R>>> shuffle_a;  // [32][vec_size]
-  std::vector<std::vector<TPShare<R>>> shuffle_tp_a;
-  std::vector<std::vector<AddShare<R>>> shuffle_b;
-  std::vector<std::vector<TPShare<R>>> shuffle_tp_b;
-  std::vector<std::vector<AddShare<R>>> shuffle_c;
-  std::vector<std::vector<TPShare<R>>> shuffle_tp_c;
-  std::vector<std::vector<Ring>> shuffle_delta;  // [32][vec_size]
-  std::vector<std::vector<int>> shuffle_pi;  // [32][vec_size]
-  std::vector<std::vector<std::vector<int>>> shuffle_tp_pi_all;  // [32][nP][vec_size]
-  
-  // Multiplication triples for each of the 32 compact operations
-  std::vector<std::vector<AddShare<R>>> mult_triple_a;  // [32][vec_size]
-  std::vector<std::vector<TPShare<R>>> mult_tp_triple_a;
-  std::vector<std::vector<AddShare<R>>> mult_triple_b;
-  std::vector<std::vector<TPShare<R>>> mult_tp_triple_b;
-  std::vector<std::vector<AddShare<R>>> mult_triple_c;
-  std::vector<std::vector<TPShare<R>>> mult_tp_triple_c;
-  
-  // Final shuffle preprocessing for hiding the permutation before reconstruction
-  std::vector<AddShare<R>> final_shuffle_a;
-  std::vector<TPShare<R>> final_shuffle_tp_a;
-  std::vector<AddShare<R>> final_shuffle_b;
-  std::vector<TPShare<R>> final_shuffle_tp_b;
-  std::vector<AddShare<R>> final_shuffle_c;
-  std::vector<TPShare<R>> final_shuffle_tp_c;
-  std::vector<Ring> final_shuffle_delta;
-  std::vector<int> final_shuffle_pi;
-  std::vector<std::vector<int>> final_shuffle_tp_pi_all;
-  
-  PreprocSortGate() = default;
-};
 
 // Preprocessing for Rewire gate
 // Rewires gates based on a position map (provided as a public permutation)
@@ -312,41 +160,6 @@ struct PreprocRewireGate : public PreprocGate<R> {
       : PreprocGate<R>(), vec_size(vec_size), num_payloads(num_payloads) {}
 };
 
-// Preprocessing for Delete Wires gate
-// Takes a delete mask `del` and multiple payload vectors
-// Indices where `del[i] == 1` will be removed from the payloads
-// 
-// Gate logic:
-//   1. Shuffle del and all payload vectors together
-//   2. Reconstruct del to reveal which positions should be deleted
-//   3. Compact/remove indices where del == 1 from all payloads
-//
-// This gate requires preprocessing for:
-//   - Shuffle operation (for del + payloads)
-//   - Reconstruction of del
-template <class R>
-struct PreprocDeleteWiresGate : public PreprocGate<R> {
-  // Preprocessing for shuffle operation (del + all payloads)
-  std::vector<AddShare<R>> shuffle_a;
-  std::vector<TPShare<R>> shuffle_tp_a;
-  std::vector<AddShare<R>> shuffle_b;
-  std::vector<TPShare<R>> shuffle_tp_b;
-  std::vector<AddShare<R>> shuffle_c;
-  std::vector<TPShare<R>> shuffle_tp_c;
-  std::vector<Ring> shuffle_delta;
-  std::vector<int> shuffle_pi;
-  std::vector<std::vector<int>> shuffle_tp_pi_all;
-  
-  PreprocDeleteWiresGate() = default;
-  PreprocDeleteWiresGate(const std::vector<AddShare<R>>& shuffle_a, const std::vector<TPShare<R>>& shuffle_tp_a,
-                         const std::vector<AddShare<R>>& shuffle_b, const std::vector<TPShare<R>>& shuffle_tp_b,
-                         const std::vector<AddShare<R>>& shuffle_c, const std::vector<TPShare<R>>& shuffle_tp_c,
-                         const std::vector<R>& shuffle_delta, const std::vector<int>& shuffle_pi,
-                         const std::vector<std::vector<int>>& shuffle_tp_pi_all)
-      : PreprocGate<R>(), shuffle_a(shuffle_a), shuffle_tp_a(shuffle_tp_a), shuffle_b(shuffle_b), shuffle_tp_b(shuffle_tp_b),
-        shuffle_c(shuffle_c), shuffle_tp_c(shuffle_tp_c), shuffle_delta(shuffle_delta), shuffle_pi(shuffle_pi),
-        shuffle_tp_pi_all(shuffle_tp_pi_all) {}
-};
 
 // Preprocessed data for the circuit.
 template <class R>

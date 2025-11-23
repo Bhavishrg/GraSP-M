@@ -67,6 +67,14 @@ class OfflineEvaluator {
                                     std::vector<TPShare<Ring>>& tp_a, std::vector<TPShare<Ring>>& tp_b,
                                     std::vector<int>& pi, size_t& vec_size, std::vector<Ring>& delta_sh, size_t& idx_delta_sh);
 
+  void generateAmortzdPnSPermutedMasks(int nP, int pid, RandGenPool& rgen,
+                                       std::vector<std::vector<AddShare<Ring>>>& permuted_masks,
+                                       std::vector<std::vector<TPShare<Ring>>>& tp_permuted_masks,
+                                       std::vector<TPShare<Ring>>& tp_mask_R,
+                                       std::vector<std::vector<int>>& all_permutations,
+                                       size_t vec_size, size_t nP_parties,
+                                       std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
+
   // Following methods implement various preprocessing subprotocols.
 
   // Set masks for each wire. Should be called before running any of the other

@@ -82,7 +82,7 @@ namespace graphdb {
 
     void rewireEvaluate(const std::vector<common::utils::SIMDOGate> &rewire_gates);
 
-    void deleteWiresEvaluate(const std::vector<common::utils::SIMDOGate> &delete_gates);
+    void amortzdPnSEvaluate(const std::vector<common::utils::SIMDOGate> &amortzdPnS_gates);
 
     std::vector<Ring> getOutputs();
 

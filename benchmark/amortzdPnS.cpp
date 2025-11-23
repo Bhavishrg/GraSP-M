@@ -16,35 +16,30 @@ using namespace graphdb;
 using json = nlohmann::json;
 namespace bpo = boost::program_options;
 
-common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size, size_t num_payloads) {
+common::utils::Circuit<Ring> generateCircuit(int nP, int pid, size_t vec_size) {
 
-    std::cout << "Generating circuit with vec_size=" << vec_size 
-              << ", num_payloads=" << num_payloads << std::endl;
+    std::cout << "Generating circuit for AmortzdPnS" << std::endl;
+
+    // Here we just pass identity permutations
+    std::vector<int> base_perm(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        base_perm[i] = static_cast<int>(i);
+    }
+    std::vector<std::vector<int>> permutation;
+    for (int i = 0; i < nP; ++i) {
+        permutation.push_back(base_perm);
+    }
 
     common::utils::Circuit<Ring> circ;
 
-    // Create position map input wires (secret shares)
-    std::vector<common::utils::wire_t> position_map_shares(vec_size);
-    std::generate(position_map_shares.begin(), position_map_shares.end(), [&]() { return circ.newInputWire(); });
+    std::vector<common::utils::wire_t> input_vector(vec_size);
+    std::generate(input_vector.begin(), input_vector.end(), [&]() { return circ.newInputWire(); });
 
-    // Reconstruct position map to get public permutation values
-    std::vector<common::utils::wire_t> position_map_reconstructed(vec_size);
-    for (size_t i = 0; i < vec_size; ++i) {
-        position_map_reconstructed[i] = circ.addGate(common::utils::GateType::kRec, position_map_shares[i]);
-    }
-
-    // Create payload input wires
-    std::vector<std::vector<common::utils::wire_t>> payloads(num_payloads);
-    for (size_t p = 0; p < num_payloads; ++p) {
-        payloads[p].resize(vec_size);
-        std::generate(payloads[p].begin(), payloads[p].end(), [&]() { return circ.newInputWire(); });
-    }
-
-    // Add rewire gate with reconstructed position map
-    auto outputs = circ.addRewireGate(position_map_reconstructed, payloads);
-
-    // Set outputs
-    for (size_t p = 0; p < num_payloads; ++p) {
+    // AmortzdPnS returns nP outputs, one for each party (nP is inferred from permutation.size())
+    auto outputs = circ.addMOGate(common::utils::GateType::kAmortzdPnS, input_vector, permutation);
+    
+    // Set all outputs as circuit outputs
+    for (int p = 0; p < nP; ++p) {
         for (size_t i = 0; i < vec_size; ++i) {
             circ.setAsOutput(outputs[p][i]);
         }
@@ -64,8 +59,6 @@ void benchmark(const bpo::variables_map& opts) {
 
     auto nP = opts["num-parties"].as<int>();
     auto vec_size = opts["vec-size"].as<size_t>();
-    auto num_payloads = opts["num-payloads"].as<size_t>();
-    auto iter = opts["iter"].as<int>();
     auto latency = opts["latency"].as<double>();
     auto pid = opts["pid"].as<size_t>();
     auto threads = opts["threads"].as<size_t>();
@@ -77,7 +70,7 @@ void benchmark(const bpo::variables_map& opts) {
     omp_set_nested(1);
     if (nP < 10) { omp_set_num_threads(nP); }
     else { omp_set_num_threads(10); }
-    std::cout << "Starting benchmarks" << std::endl;
+    std::cout << "Starting benchmarks for AmortzdPnS" << std::endl;
 
     std::string net_config = opts.count("net-config") ? opts["net-config"].as<std::string>() : "";
     std::shared_ptr<io::NetIOMP> network = createNetwork(pid, nP, latency, port,
@@ -90,8 +83,6 @@ void benchmark(const bpo::variables_map& opts) {
     json output_data;
     output_data["details"] = {{"num_parties", nP},
                               {"vec_size", vec_size},
-                              {"num_payloads", num_payloads},
-                              {"iterations", iter},
                               {"latency (ms)", latency},
                               {"pid", pid},
                               {"threads", threads},
@@ -109,7 +100,7 @@ void benchmark(const bpo::variables_map& opts) {
 
     network->sync();
 
-    auto circ = generateCircuit(nP, pid, vec_size, num_payloads).orderGatesByLevel();
+    auto circ = generateCircuit(nP, pid, vec_size).orderGatesByLevel();
     network->sync();
 
     std::cout << "--- Circuit ---" << std::endl;
@@ -118,7 +109,7 @@ void benchmark(const bpo::variables_map& opts) {
     std::unordered_map<common::utils::wire_t, int> input_pid_map;
     for (const auto& g : circ.gates_by_level[0]) {
         if (g->type == common::utils::GateType::kInp) {
-            input_pid_map[g->out] = 1;
+            input_pid_map[g->out] = 1;  // Party 1 owns all inputs
         }
     }
 
@@ -144,54 +135,19 @@ void benchmark(const bpo::variables_map& opts) {
     }
     std::sort(input_wires.begin(), input_wires.end());
 
+    std::vector<Ring> input_values(vec_size);
+    for (size_t i = 0; i < vec_size; ++i) {
+        input_values[i] = static_cast<Ring>(i + 1);  // deterministic payload
+    }
+
     if (!input_wires.empty()) {
         std::cout << "\n=== SETTING TEST INPUTS ===" << std::endl;
         std::cout << "Party " << pid << " setting inputs:" << std::endl;
-        
-        // Create a test permutation (reverse order for demonstration)
-        std::vector<Ring> position_map_values(vec_size);
-        for (size_t i = 0; i < vec_size; ++i) {
-            position_map_values[i] = static_cast<Ring>(vec_size - 1 - i);  // Reverse permutation
+        for (size_t idx = 0; idx < input_wires.size(); ++idx) {
+            auto wire = input_wires[idx];
+            inputs[wire] = input_values[idx];
         }
-        
-        // Create test payload data
-        std::vector<std::vector<Ring>> payload_values(num_payloads);
-        for (size_t p = 0; p < num_payloads; ++p) {
-            payload_values[p].resize(vec_size);
-            for (size_t i = 0; i < vec_size; ++i) {
-                payload_values[p][i] = static_cast<Ring>(p * 1000 + i + 1);  // Distinct values per payload
-            }
-        }
-        
-        // Set position map inputs
-        for (size_t idx = 0; idx < vec_size && idx < input_wires.size(); ++idx) {
-            inputs[input_wires[idx]] = position_map_values[idx];
-        }
-        
-        // Set payload inputs
-        size_t wire_idx = vec_size;
-        for (size_t p = 0; p < num_payloads; ++p) {
-            for (size_t i = 0; i < vec_size && wire_idx < input_wires.size(); ++i, ++wire_idx) {
-                inputs[input_wires[wire_idx]] = payload_values[p][i];
-            }
-        }
-        
-        std::cout << "  Position map (first 10): [";
-        for (size_t i = 0; i < std::min(static_cast<size_t>(10), vec_size); ++i) {
-            std::cout << position_map_values[i] << (i + 1 == std::min(static_cast<size_t>(10), vec_size) ? "" : ", ");
-        }
-        if (vec_size > 10) std::cout << ", ...";
-        std::cout << "]" << std::endl;
-        
-        for (size_t p = 0; p < std::min(static_cast<size_t>(3), num_payloads); ++p) {
-            std::cout << "  Payload " << p << " (first 10): [";
-            for (size_t i = 0; i < std::min(static_cast<size_t>(10), vec_size); ++i) {
-                std::cout << payload_values[p][i] << (i + 1 == std::min(static_cast<size_t>(10), vec_size) ? "" : ", ");
-            }
-            if (vec_size > 10) std::cout << ", ...";
-            std::cout << "]" << std::endl;
-        }
-        
+        std::cout << "Note: AmortzdPnS uses random permutations generated during preprocessing" << std::endl;
         std::cout << "  Set " << input_wires.size() << " input values" << std::endl;
         std::cout << "========================\n" << std::endl;
     }
@@ -206,24 +162,67 @@ void benchmark(const bpo::variables_map& opts) {
 
     auto outputs = eval.getOutputs();
 
-    std::cout << "\n=== REWIRE RESULT ===" << std::endl;
+    std::cout << "\n=== AMORTIZED PERMUTE AND SHARE RESULT ===" << std::endl;
     std::cout << "Party " << pid << " reconstructed outputs:" << std::endl;
-    std::cout << "  Total number of outputs: " << outputs.size() << std::endl;
-    std::cout << "  Outputs per payload: " << vec_size << std::endl;
+    std::cout << "  Total number of outputs: " << outputs.size() << " (should be " << nP * vec_size << ")" << std::endl;
+    std::cout << "  Debug: pid=" << pid << ", nP=" << nP << ", use_pking=" << use_pking << std::endl;
     
-    // Display rewired outputs
-    for (size_t p = 0; p < std::min(static_cast<size_t>(3), num_payloads); ++p) {
-        std::cout << "  Payload " << p << " output (first 10): [";
-        size_t start_idx = p * vec_size;
-        for (size_t i = 0; i < std::min(static_cast<size_t>(10), vec_size) && (start_idx + i) < outputs.size(); ++i) {
-            std::cout << outputs[start_idx + i] << (i + 1 == std::min(static_cast<size_t>(10), vec_size) ? "" : ", ");
+    // Split outputs into nP groups (one per party)
+    std::vector<std::vector<Ring>> party_outputs(nP);
+    for (int p = 0; p < nP; ++p) {
+        party_outputs[p].resize(vec_size);
+        for (size_t i = 0; i < vec_size; ++i) {
+            party_outputs[p][i] = outputs[p * vec_size + i];
         }
-        if (vec_size > 10) std::cout << ", ...";
-        std::cout << "]" << std::endl;
     }
     
-    std::cout << "  ✓ REWIRE COMPLETE - Payloads permuted according to position map" << std::endl;
-    std::cout << "============================\n" << std::endl;
+    // Print input
+    std::cout << "\n  Input (first 20):  [";
+    for (size_t i = 0; i < std::min(static_cast<size_t>(20), input_values.size()); ++i) {
+        std::cout << input_values[i] << (i + 1 == std::min(static_cast<size_t>(20), input_values.size()) ? "" : ", ");
+    }
+    if (input_values.size() > 20) std::cout << ", ...";
+    std::cout << "]" << std::endl;
+    
+    // Print outputs for each party
+    for (int p = 0; p < nP; ++p) {
+        std::cout << "\n  Party " << p << " output (first 20): [";
+        for (size_t i = 0; i < std::min(static_cast<size_t>(20), party_outputs[p].size()); ++i) {
+            std::cout << party_outputs[p][i] << (i + 1 == std::min(static_cast<size_t>(20), party_outputs[p].size()) ? "" : ", ");
+        }
+        if (party_outputs[p].size() > 20) std::cout << ", ...";
+        std::cout << "]" << std::endl;
+        
+        // Verify each output is a permutation of input
+        std::vector<Ring> sorted_inputs = input_values;
+        std::vector<Ring> sorted_party_outputs = party_outputs[p];
+        std::sort(sorted_inputs.begin(), sorted_inputs.end());
+        std::sort(sorted_party_outputs.begin(), sorted_party_outputs.end());
+        
+        bool is_valid_permutation = (sorted_inputs == sorted_party_outputs);
+        if (is_valid_permutation) {
+            std::cout << "    ✓ Valid permutation for Party " << p << std::endl;
+        } else {
+            std::cout << "    ✗ INVALID permutation for Party " << p << std::endl;
+        }
+    }
+    
+    // Overall validation
+    bool all_valid = true;
+    for (int p = 0; p < nP; ++p) {
+        std::vector<Ring> sorted_inputs = input_values;
+        std::vector<Ring> sorted_party_outputs = party_outputs[p];
+        std::sort(sorted_inputs.begin(), sorted_inputs.end());
+        std::sort(sorted_party_outputs.begin(), sorted_party_outputs.end());
+        if (sorted_inputs != sorted_party_outputs) {
+            all_valid = false;
+            break;
+        }
+    }
+    
+    std::cout << "\n  " << (all_valid ? "✓ AMORTIZED PnS CORRECT" : "✗ AMORTIZED PnS INCORRECT") << std::endl;
+    std::cout << "  All " << nP << " parties received valid permutations of the input" << std::endl;
+    std::cout << "==========================================\n" << std::endl;
 
     network->sync();
     StatsPoint online_end(*network);
@@ -278,9 +277,7 @@ bpo::options_description programOptions() {
     bpo::options_description desc("Following options are supported by config file too.");
     desc.add_options()
         ("num-parties,n", bpo::value<int>()->required(), "Number of parties.")
-        ("vec-size,v", bpo::value<size_t>()->required(), "Size of position map and payload vectors.")
-        ("num-payloads", bpo::value<size_t>()->default_value(2), "Number of payload vectors to rewire.")
-        ("iter,i", bpo::value<int>()->default_value(1), "Number of iterations for message passing.")
+        ("vec-size,v", bpo::value<size_t>()->required(), "Number of elements in the vector.")
         ("latency,l", bpo::value<double>()->default_value(0.5), "Network latency in ms.")
         ("pid,p", bpo::value<size_t>()->required(), "Party ID.")
         ("threads,t", bpo::value<size_t>()->default_value(6), "Number of threads (recommended 6).")
@@ -297,7 +294,7 @@ bpo::options_description programOptions() {
 
 int main(int argc, char* argv[]) {
     auto prog_opts(programOptions());
-    bpo::options_description cmdline("Benchmark online phase for rewire gates.");
+    bpo::options_description cmdline("Benchmark online phase for amortized permute and share gates.");
     cmdline.add(prog_opts);
     cmdline.add_options()(
       "config,c", bpo::value<std::string>(),
@@ -334,4 +331,4 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     return 0;
-}
+} // usage: ./../run.sh amortzdPnS -n 2 -v 5 

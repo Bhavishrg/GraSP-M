@@ -80,23 +80,8 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
       os << "Public Permutation";
       break;
 
-    case kCompact:
-      os << "Compact";
-      break;
-    case kDeleteWires:
-      os << "Delete Wires";
-      break;
-
-    case kGroupwiseIndex:
-      os << "Group-wise Index";
-      break;
-
-    case kGroupwisePropagate:
-      os << "Group-wise Propagate";
-      break;
-
-    case kSort:
-      os << "Sort";
+    case kAmortzdPnS:
+      os << "Amortized Permute and Share";
       break;
 
     case kRewire:
