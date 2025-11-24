@@ -96,20 +96,24 @@ struct PreprocShuffleGate : public PreprocGate<R> {
 
 template <class R>
 struct PreprocPermAndShGate : public PreprocGate<R> {
-  std::vector<AddShare<R>> a; // Randomly sampled vector
-  std::vector<TPShare<R>> tp_a; // Randomly sampled vector
-  std::vector<AddShare<R>> b; // Randomly sampled vector
-  std::vector<TPShare<R>> tp_b; // Randomly sampled vector
-  std::vector<AddShare<R>> delta; // Delta vector only held by the owner party. Dummy values for the other parties
-  std::vector<int> pi; // Randomly sampled permutation using HP
-  std::vector<std::vector<int>> tp_pi_all; // Randomly sampled permutations of all parties using HP
-  std::vector<int> pi_common; // Common random permutation held by all parties except HP. HP holds dummy values
+  // Mask R and its shares
+  std::vector<AddShare<R>> mask_R;      // This party's additive shares of R
+  std::vector<TPShare<R>> tp_mask_R;    // All parties' shares of R
+
+  // Permuted mask π_owner(R) (only one permutation per gate - the owner's)
+  std::vector<AddShare<R>> permuted_mask;      // This party's additive shares of π_owner(R)
+  std::vector<TPShare<R>> tp_permuted_mask;    // All parties' shares of π_owner(R)
+
+  size_t vec_size; // Size of input vector
+  int owner;       // Owner party id for this permute-and-share gate
+
   PreprocPermAndShGate() = default;
-  PreprocPermAndShGate(const std::vector<AddShare<R>>& a, const std::vector<TPShare<R>>& tp_a,
-                       const std::vector<AddShare<R>>& b, const std::vector<TPShare<R>>& tp_b,
-                       const std::vector<AddShare<R>>& delta, const std::vector<int>& pi, const std::vector<std::vector<int>>& tp_pi_all,
-                       const std::vector<int>& pi_common)
-      : PreprocGate<R>(), a(a), tp_a(tp_a), b(b), tp_b(tp_b), delta(delta), pi(pi), tp_pi_all(tp_pi_all), pi_common(pi_common) {}
+  PreprocPermAndShGate(const std::vector<AddShare<R>>& mask_R,
+                       const std::vector<TPShare<R>>& tp_mask_R,
+                       const std::vector<AddShare<R>>& permuted_mask,
+                       const std::vector<TPShare<R>>& tp_permuted_mask,
+                       size_t vec_size, int owner)
+      : PreprocGate<R>(), mask_R(mask_R), tp_mask_R(tp_mask_R), permuted_mask(permuted_mask), tp_permuted_mask(tp_permuted_mask), vec_size(vec_size), owner(owner) {}
 };
 
 

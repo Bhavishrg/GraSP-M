@@ -63,10 +63,6 @@ class OfflineEvaluator {
                                   size_t& vec_size, std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
 
 
-  void generatePermAndShDeltaVector(int nP, int pid, RandGenPool& rgen, int owner, std::vector<AddShare<Ring>>& delta,
-                                    std::vector<TPShare<Ring>>& tp_a, std::vector<TPShare<Ring>>& tp_b,
-                                    std::vector<int>& pi, size_t& vec_size, std::vector<Ring>& delta_sh, size_t& idx_delta_sh);
-
   void generateAmortzdPnSPermutedMasks(int nP, int pid, RandGenPool& rgen,
                                        std::vector<std::vector<AddShare<Ring>>>& permuted_masks,
                                        std::vector<std::vector<TPShare<Ring>>>& tp_permuted_masks,
@@ -75,13 +71,19 @@ class OfflineEvaluator {
                                        size_t vec_size, size_t nP_parties,
                                        std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
 
-  // Following methods implement various preprocessing subprotocols.
+  void generatePermAndShPermutedMask(int nP, int pid, RandGenPool& rgen,
+                                     std::vector<AddShare<Ring>>& permuted_mask,
+                                     std::vector<TPShare<Ring>>& tp_permuted_mask,
+                                     std::vector<TPShare<Ring>>& tp_mask_R,
+                                     std::vector<int>& owner_pi,
+                                     size_t vec_size, int owner,
+                                     std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
+
 
   // Set masks for each wire. Should be called before running any of the other
   // subprotocols.
   void setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map,
-                         std::vector<Ring>& rand_sh_sec,
-                         std::vector<std::vector<Ring>>& delta_sh);
+                         std::vector<Ring>& rand_sh_sec);
 
   void setWireMasks(const std::unordered_map<common::utils::wire_t, int>& input_pid_map);
 

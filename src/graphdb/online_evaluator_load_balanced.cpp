@@ -4,6 +4,42 @@
 
 namespace graphdb
 {
+    // Helper function to reconstruct shares towards a designated party
+    void OnlineEvaluator::reconstructToParty(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
+                                            const std::vector<Ring>& shares_list,
+                                            std::vector<Ring>& reconstructed_list,
+                                            int target_party, int latency) {
+        size_t num_shares = shares_list.size();
+        reconstructed_list.resize(num_shares, 0);
+        
+        if (pid == target_party) {
+            // Target party receives shares from all other parties
+            std::vector<std::vector<Ring>> share_recv(nP);
+            share_recv[target_party - 1] = shares_list;
+            
+            usleep(latency);
+            
+            // Receive from all parties except self
+            for (int p = 1; p <= nP; ++p) {
+                if (p != target_party) {
+                    share_recv[p - 1].resize(num_shares);
+                    network->recv(p, share_recv[p - 1].data(), share_recv[p - 1].size() * sizeof(Ring));
+                }
+            }
+            
+            // Aggregate shares
+            for (int p = 0; p < nP; ++p) {
+                for (size_t i = 0; i < num_shares; ++i) {
+                    reconstructed_list[i] += share_recv[p][i];
+                }
+            }
+        } else {
+            // Non-target parties send their shares to target party
+            network->send(target_party, shares_list.data(), shares_list.size() * sizeof(Ring));
+            network->flush(target_party);
+        }
+    }
+
     // Helper function to reconstruct shares via king party or direct all-to-all
     void OnlineEvaluator::reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
                                      const std::vector<Ring>& shares_list,
@@ -337,111 +373,117 @@ namespace graphdb
 
         
     void OnlineEvaluator::permAndShEvaluate(const std::vector<common::utils::SIMDOGate> &permAndSh_gates) {
-        if (id_ == 0) { return; }
-        
-        // Use thread pool to execute send and receive in parallel
-        auto send_future = tpool_->enqueue([&]() {
-            for (int idx_gate = 0; idx_gate < permAndSh_gates.size(); ++idx_gate) {
-                auto *pre_permAndSh = static_cast<PreprocPermAndShGate<Ring> *>(preproc_.gates[permAndSh_gates[idx_gate].out].get());
-                size_t vec_size = permAndSh_gates[idx_gate].in.size();
-                std::vector<Ring> z(vec_size, 0);
-                if (id_ != permAndSh_gates[idx_gate].owner) {
-                    for (int i = 0; i < vec_size; ++i) {
-                        z[i] = wires_[permAndSh_gates[idx_gate].in[i]] - pre_permAndSh->a[i].valueAt();
-                        wires_[permAndSh_gates[idx_gate].outs[i]] = pre_permAndSh->b[i].valueAt();
-                    }
-                    network_->send(permAndSh_gates[idx_gate].owner, z.data(), z.size() * sizeof(Ring));
-                    network_->flush(permAndSh_gates[idx_gate].owner);
-                }
-            }
-        });
+        if (id_ == 0 || permAndSh_gates.empty()) { return; }
 
-        auto recv_future = tpool_->enqueue([&]() {
-            usleep(latency_);
-            for (int idx_gate = 0; idx_gate < permAndSh_gates.size(); ++idx_gate) {
-                if (id_ == permAndSh_gates[idx_gate].owner) {
-                    auto *pre_permAndSh = static_cast<PreprocPermAndShGate<Ring> *>(preproc_.gates[permAndSh_gates[idx_gate].out].get());
-                    size_t vec_size = permAndSh_gates[idx_gate].in.size();
-                    std::vector<std::vector<Ring>> z(nP_, std::vector<Ring>(vec_size, 0));
-                    
-                    for (int pid = 1; pid <= nP_; ++pid) {
-                        if (pid != permAndSh_gates[idx_gate].owner) {
-                            std::vector<Ring> z_recv(vec_size);
-                            network_->recv(pid, z_recv.data(), z_recv.size() * sizeof(Ring));
-                            for (int i = 0; i < vec_size; ++i) {
-                                z[pid - 1][i] += z_recv[i];
-                            }
-                        } else {
-                            for (int i = 0; i < vec_size; ++i) {
-                                z[pid - 1][i] += wires_[permAndSh_gates[idx_gate].in[i]];
-                            }
-                        }
+        // Group gates by owner and batch masked shares for reconstruction
+        std::vector<std::vector<Ring>> masked_shares_by_owner(nP_ + 1);
+        std::vector<std::vector<size_t>> gate_indices_by_owner(nP_ + 1);
+        std::vector<std::vector<size_t>> gate_offsets_by_owner(nP_ + 1);
+        std::vector<size_t> gate_vec_sizes;
+        
+        gate_vec_sizes.reserve(permAndSh_gates.size());
+        
+        // Collect masked shares grouped by owner
+        for (size_t gidx = 0; gidx < permAndSh_gates.size(); ++gidx) {
+            const auto &gate = permAndSh_gates[gidx];
+            auto *preproc = static_cast<PreprocPermAndShGate<Ring> *>(preproc_.gates[gate.out].get());
+            size_t vec_size = preproc->vec_size;
+            int owner = preproc->owner;
+            
+            gate_vec_sizes.push_back(vec_size);
+            gate_indices_by_owner[owner].push_back(gidx);
+            gate_offsets_by_owner[owner].push_back(masked_shares_by_owner[owner].size());
+            
+            // Compute masked shares: T + R
+            for (size_t i = 0; i < vec_size; ++i) {
+                masked_shares_by_owner[owner].push_back(wires_[gate.in[i]] + preproc->mask_R[i].valueAt());
+            }
+        }
+        
+        // Reconstruct batched shares for each owner
+        std::vector<std::vector<Ring>> Tprime_by_owner(nP_ + 1);
+        #pragma omp parallel for
+        for (int owner = 1; owner <= nP_; ++owner) {
+            if (!masked_shares_by_owner[owner].empty()) {
+                reconstructToParty(nP_, id_, network_, masked_shares_by_owner[owner], Tprime_by_owner[owner], owner, latency_);
+            }
+        }
+        
+        // Compute outputs for each gate
+        for (int owner = 1; owner <= nP_; ++owner) {
+            for (size_t idx = 0; idx < gate_indices_by_owner[owner].size(); ++idx) {
+                size_t gidx = gate_indices_by_owner[owner][idx];
+                const auto &gate = permAndSh_gates[gidx];
+                auto *preproc = static_cast<PreprocPermAndShGate<Ring> *>(preproc_.gates[gate.out].get());
+                size_t vec_size = gate_vec_sizes[gidx];
+                size_t offset = gate_offsets_by_owner[owner][idx];
+                const std::vector<int> &owner_pi = gate.permutation[0];
+                
+                if (id_ == owner) {
+                    // Owner computes π(T') - π(R) for their permutation
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        int idx_perm = owner_pi[i];
+                        wires_[gate.outs[i]] = Tprime_by_owner[owner][offset + idx_perm] - preproc->permuted_mask[idx_perm].valueAt();
                     }
-                    for (int i = 0; i < vec_size; ++i) {
-                        Ring sum = Ring(0);
-                        for (int pid = 0; pid < nP_; ++pid) {
-                            sum += z[pid][pre_permAndSh->pi[i]];
-                        }
-                        wires_[permAndSh_gates[idx_gate].outs[i]] = sum + pre_permAndSh->delta[i].valueAt();
+                } else {
+                    // Non-owners compute -π_i(R)
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        wires_[gate.outs[i]] = -preproc->permuted_mask[i].valueAt();
                     }
                 }
             }
-        });
-        
-        // Wait for both send and receive operations to complete
-        if (send_future.valid()) {
-            send_future.wait();
-        }
-        if (recv_future.valid()) {
-            recv_future.wait();
         }
     }
 
     void OnlineEvaluator::amortzdPnSEvaluate(const std::vector<common::utils::SIMDOGate> &amortzdPnS_gates) {
         if (id_ == 0 || amortzdPnS_gates.empty()) { return; }
-        
-        // Protocol:
-        // 1. Each party masks their input T with R: compute T + R
-        // 2. Reconstruct T' = T + R (public)
-        // 3. Party i computes: ⟨T_i⟩_i = π_i(T') - ⟨π_i(R)⟩_i
-        // 4. Party i computes: ⟨T_j⟩_i = -⟨π_j(R)⟩_i for j ≠ i
-        
+
+        // Batch mask-and-reconstruct across all amortzdPnS gates.
+        std::vector<Ring> all_masked;
+        std::vector<size_t> vec_sizes;
+        std::vector<const common::utils::SIMDOGate*> gates_order;
+
         for (const auto &gate : amortzdPnS_gates) {
             auto *preproc = static_cast<PreprocAmortzdPnSGate<Ring> *>(preproc_.gates[gate.outs[0]].get());
             size_t vec_size = preproc->vec_size;
-            size_t nP = preproc->nP;
-            
-            // Step 1: Mask input with R: compute shares of T + R
-            std::vector<Ring> masked_shares(vec_size);
-            for (size_t i = 0; i < vec_size; i++) {
-                masked_shares[i] = wires_[gate.in[i]] + preproc->mask_R[i].valueAt();
+            vec_sizes.push_back(vec_size);
+            gates_order.push_back(&gate);
+            for (size_t i = 0; i < vec_size; ++i) {
+                all_masked.push_back(wires_[gate.in[i]] + preproc->mask_R[i].valueAt());
             }
-            
-            // Step 2: Reconstruct T' = T + R
-            std::vector<Ring> T_prime(vec_size);
-            reconstruct(nP_, id_, network_, masked_shares, T_prime, use_pking_, latency_);
-            
-            // Step 3 & 4: Compute output shares
-            // Outputs are flattened: [party0_vec, party1_vec, ..., partyNP_vec]
+        }
+
+        if (all_masked.empty()) { return; }
+
+        std::vector<Ring> all_Tprime;
+        reconstruct(nP_, id_, network_, all_masked, all_Tprime, use_pking_, latency_);
+
+        // Now split and compute outputs per gate. For each amortzdPnS gate, we need to produce nP * vec_size outputs (flattened).
+        size_t offset = 0;
+        for (size_t gidx = 0; gidx < amortzdPnS_gates.size(); ++gidx) {
+            const auto *gate = gates_order[gidx];
+            auto *preproc = static_cast<PreprocAmortzdPnSGate<Ring> *>(preproc_.gates[gate->outs[0]].get());
+            size_t vec_size = vec_sizes[gidx];
+            size_t nP = preproc->nP;
+
+            // T' for this gate is all_Tprime[offset ... offset+vec_size-1]
+            // Fill outputs in flattened order: for party 0..nP-1, each has vec_size outputs
             size_t out_idx = 0;
-            
-            for (size_t party_idx = 0; party_idx < nP; party_idx++) {
+            for (size_t party_idx = 0; party_idx < nP; ++party_idx) {
                 if (party_idx + 1 == id_) {
-                    // This is my output: ⟨T_i⟩_i = π_i(T') - ⟨π_i(R)⟩_i
-                    const std::vector<int>& my_permutation = gate.permutation[0];
-                    for (size_t j = 0; j < vec_size; j++) {
+                    const std::vector<int>& my_permutation = gate->permutation[0];
+                    for (size_t j = 0; j < vec_size; ++j) {
                         int idx_perm = my_permutation[j];
-                        wires_[gate.outs[out_idx++]] = T_prime[idx_perm] - preproc->permuted_masks[party_idx][idx_perm].valueAt();
+                        wires_[gate->outs[out_idx++]] = all_Tprime[offset + idx_perm] - preproc->permuted_masks[party_idx][idx_perm].valueAt();
                     }
                 } else {
-                    // Other party's output: ⟨T_j⟩_i = -⟨π_j(R)⟩_i
-                    for (size_t j = 0; j < vec_size; j++) {
-                        // We don't know the permutation, so we use shares in original order
-                        // The preprocessing already computed π_j(R), so shares are already permuted
-                        wires_[gate.outs[out_idx++]] = -preproc->permuted_masks[party_idx][j].valueAt();
+                    for (size_t j = 0; j < vec_size; ++j) {
+                        wires_[gate->outs[out_idx++]] = -preproc->permuted_masks[party_idx][j].valueAt();
                     }
                 }
             }
+
+            offset += vec_size;
         }
     }
 

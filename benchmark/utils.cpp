@@ -380,37 +380,37 @@ std::vector<common::utils::wire_t> addSubCircApplyE(
 }
 
 
-std::vector<std::vector<common::utils::wire_t>> addSubCircDecompose(
-    common::utils::Circuit<common::utils::Ring>& circ,
-    const std::vector<std::vector<common::utils::wire_t>>& position_maps,
-    const std::vector<common::utils::wire_t>& data_values,
-    size_t num_groups,
-    std::vector<std::vector<int>> permutation) {
+// std::vector<std::vector<common::utils::wire_t>> addSubCircDecompose(
+//     common::utils::Circuit<common::utils::Ring>& circ,
+//     const std::vector<std::vector<common::utils::wire_t>>& position_maps,
+//     const std::vector<common::utils::wire_t>& data_values,
+//     size_t num_groups,
+//     std::vector<std::vector<int>> permutation) {
     
-    size_t vec_size = data_values.size();
-    size_t nP = position_map_shares.size();
+//     size_t vec_size = data_values.size();
+//     size_t nP = position_map_shares.size();
     
-    // Validate that all position_map_shares have the same size as data_values
-    for (size_t i = 0; i < nP; ++i) {
-        if (position_map_shares[i].size() != vec_size) {
-            throw std::invalid_argument("All position_map_shares must have the same size as data_values");
-        }
-    }
+//     // Validate that all position_map_shares have the same size as data_values
+//     for (size_t i = 0; i < nP; ++i) {
+//         if (position_map_shares[i].size() != vec_size) {
+//             throw std::invalid_argument("All position_map_shares must have the same size as data_values");
+//         }
+//     }
     
-    // Step 1: Apply kAmortzdPnS gate to generate nP output vectors (one per party)
-    auto amortized_outputs = circ.addMOGate(common::utils::GateType::kAmortzdPnS, data_values, permutation);
+//     // Step 1: Apply kAmortzdPnS gate to generate nP output vectors (one per party)
+//     auto amortized_outputs = circ.addMOGate(common::utils::GateType::kAmortzdPnS, data_values, permutation);
     
-    // Step 2: Rewire each output vector with its corresponding position_map
-    std::vector<std::vector<common::utils::wire_t>> rewired_outputs(nP);
-    for (size_t i = 0; i < nP; ++i) {
-        // Rewire the i-th amortized output using the i-th reconstructed position map
-        std::vector<std::vector<common::utils::wire_t>> single_payload = {amortized_outputs[i]};
-        auto rewired = circ.addRewireGate(position_maps[i], single_payload);
-        rewired_outputs[i] = rewired[0];
-    }
+//     // Step 2: Rewire each output vector with its corresponding position_map
+//     std::vector<std::vector<common::utils::wire_t>> rewired_outputs(nP);
+//     for (size_t i = 0; i < nP; ++i) {
+//         // Rewire the i-th amortized output using the i-th reconstructed position map
+//         std::vector<std::vector<common::utils::wire_t>> single_payload = {amortized_outputs[i]};
+//         auto rewired = circ.addRewireGate(position_maps[i], single_payload);
+//         rewired_outputs[i] = rewired[0];
+//     }
     
-    return rewired_outputs;
-}
+//     return rewired_outputs;
+// }
 
 
 
