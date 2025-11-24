@@ -15,6 +15,7 @@ add_benchmark(mult)
 add_benchmark(propagate)
 add_benchmark(gather)
 add_benchmark(bfs)
+add_benchmark(initialization_grasp)
 
 add_custom_target(benchmarks)
 add_dependencies(benchmarks ${benchbin})

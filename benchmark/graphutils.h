@@ -7,6 +7,7 @@
 #include <mutex>
 #include <random>
 #include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _OPENMP
@@ -93,67 +94,41 @@ struct DistributedDaglist {
     int num_clients;
     int nV;  // Total number of vertices
     int nE;  // Total number of edges
-    vector<vector<DagEntry>> VertexLists;  // VertexLists[i] = vertices owned by party i
-    vector<vector<DagEntry>> EdgeLists;    // EdgeLists[i] = edges owned by party i
-    vector<Ring> VSizes;  // Number of vertices in each VertexList
-    vector<Ring> ESizes;  // Number of edges in each EdgeList
-    
-    // Operation lists for graph modifications
-    vector<vector<DagEntry>> InsertV;  // InsertV[i] = vertices to insert for party i
-    vector<vector<DagEntry>> InsertE;  // InsertE[i] = edges to insert for party i
-    vector<vector<DagEntry>> DeleteV;  // DeleteV[i] = vertices to delete for party i
-    vector<vector<DagEntry>> DeleteE;  // DeleteE[i] = edges to delete for party i
-    
-    vector<vector<Ring>> ChangeV;   // ChangeV[i][j] = data change for j-th vertex of party i
-    vector<vector<Ring>> isChangeV; // ChangeV[i][j] = 1/0 indicating if j-th vertex of party i is changed
-    vector<vector<Ring>> ChangeE;   // ChangeE[i][j] = data change for j-th edge of party i
-    vector<vector<Ring>> isChangeE; // ChangeE[i][j] = 1/0 indicating if j-th edge of party i is changed
-    vector<vector<Ring>> isDelV; // ChangeE[i][j] = 1/0 indicating if j-th edge of party i is changed
-    vector<vector<Ring>> isDelE; // ChangeE[i][j] = 1/0 indicating if j-th edge of party i is changed
 
+    vector<DagEntry> VertexList;  // All vertices across parties
+    vector<DagEntry> EdgeList;    // All edges across parties
+
+    vector<Ring> SubgraphSizes; // Size of Subgraph per party
+    vector<vector<DagEntry>> SubgVertexLists;  // Subgraph corresponding to each party    
+    vector<vector<DagEntry>> SubgEdgeLists;    // Subgraph corresponding to each party
+    
+    // Permutation vectors for shuffling
+
+    vector<vector<Ring>> sigg; // permutation to reorder VertexList such that vertices owned by party i and their immediate neighbors are grouped together
+    
+    vector<vector<Ring>> sigs; // permutation of size SubgraphSizes[i] to reorder subgraph Subgraphs[i] from vertex order to source order 
+    vector<vector<Ring>> sigd; // permutation of size SubgraphSizes[i] to reorder subgraph Subgraphs[i] from source order to destination order
+    vector<vector<Ring>> sigv; // permutation of size SubgraphSizes[i] to reorder subgraph Subgraphs[i] from destination order to vertex order
+    
     DistributedDaglist() : num_clients(0), nV(0), nE(0) {}
     
     DistributedDaglist(int np) : num_clients(np), nV(0), nE(0) {
-        VertexLists.resize(np);
-        EdgeLists.resize(np);
-        VSizes.resize(np, 0);
-        ESizes.resize(np, 0);
-        InsertV.resize(np);
-        InsertE.resize(np);
-        DeleteV.resize(np);
-        DeleteE.resize(np);
-        ChangeV.resize(np);
-        ChangeE.resize(np);
-        isChangeV.resize(np);
-        isChangeE.resize(np);
-        isDelV.resize(np);
-        isDelE.resize(np);
+        SubgVertexLists.resize(np);
+        SubgEdgeLists.resize(np);
+        SubgraphSizes.resize(np, 0);
+        sigg.resize(np);
+        sigs.resize(np);
+        sigd.resize(np);
+        sigv.resize(np);
     }
-    
-    DistributedDaglist(int np, int total_nV, int total_nE) 
-        : num_clients(np), nV(total_nV), nE(total_nE) {
-        VertexLists.resize(np);
-        EdgeLists.resize(np);
-        VSizes.resize(np, 0);
-        ESizes.resize(np, 0);
-        InsertV.resize(np);
-        InsertE.resize(np);
-        DeleteV.resize(np);
-        DeleteE.resize(np);
-        ChangeV.resize(np);
-        ChangeE.resize(np);
-        isChangeV.resize(np);
-        isChangeE.resize(np);
-        isDelV.resize(np);
-        isDelE.resize(np);
-    }
+  
     
     // Get all entries (vertices + edges) for a specific party
     vector<DagEntry> getPartyEntries(int party_id) const {
         vector<DagEntry> result;
-        result.reserve(VSizes[party_id] + ESizes[party_id]);
-        result.insert(result.end(), VertexLists[party_id].begin(), VertexLists[party_id].end());
-        result.insert(result.end(), EdgeLists[party_id].begin(), EdgeLists[party_id].end());
+        result.reserve(SubgraphSizes[party_id]);
+        result.insert(result.end(), SubgVertexLists[party_id].begin(), SubgVertexLists[party_id].end());
+        result.insert(result.end(), SubgEdgeLists[party_id].begin(), SubgEdgeLists[party_id].end());
         return result;
     }
     
@@ -163,79 +138,6 @@ struct DistributedDaglist {
     }
 };
 
-// Struct to represent a single daglist entry with secret-shared wires (for circuit construction)
-struct SSDagEntry {
-    wire_t src;   // Wire for source vertex ID
-    wire_t dst;   // Wire for destination vertex ID
-    wire_t isV;   // Wire for isVertex flag (1 if vertex entry, 0 if edge entry)
-    wire_t data;  // Wire for data payload
-    wire_t sigs;  // Wire for position in source-ordered index
-    wire_t sigv;  // Wire for position in vertex-ordered index
-    wire_t sigd;  // Wire for position in destination-ordered index
-    
-    // Constructor
-    SSDagEntry(wire_t src_ = 0, wire_t dst_ = 0, wire_t isV_ = 0, wire_t data_ = 0,
-               wire_t sigs_ = 0, wire_t sigv_ = 0, wire_t sigd_ = 0)
-        : src(src_), dst(dst_), isV(isV_), data(data_), 
-          sigs(sigs_), sigv(sigv_), sigd(sigd_) {}
-};
-
-// Struct to represent a complete daglist graph with secret-shared wires
-struct SSDaglist {
-    vector<SSDagEntry> entries;
-    Ring nV;  // Number of vertices (plaintext metadata)
-    Ring nE;  // Number of edges (plaintext metadata)
-    
-    SSDaglist() : nV(0), nE(0) {}
-    
-    SSDaglist(const vector<SSDagEntry>& entries_, Ring nV_, Ring nE_) 
-        : entries(entries_), nV(nV_), nE(nE_) {}
-    
-    size_t size() const { return entries.size(); }
-    bool empty() const { return entries.empty(); }
-};
-
-// Struct to represent distributed daglist with secret-shared wires across multiple parties
-struct SSDistributedDaglist {
-    int num_clients;
-    int nV;  // Total number of vertices (plaintext metadata)
-    int nE;  // Total number of edges (plaintext metadata)
-    vector<vector<SSDagEntry>> VertexLists;  // VertexLists[i] = secret-shared vertices owned by party i
-    vector<vector<SSDagEntry>> EdgeLists;    // EdgeLists[i] = secret-shared edges owned by party i
-    vector<Ring> VSizes;  // Number of vertices in each VertexList
-    vector<Ring> ESizes;  // Number of edges in each EdgeList
-    
-    SSDistributedDaglist() : num_clients(0), nV(0), nE(0) {}
-    
-    SSDistributedDaglist(int np) : num_clients(np), nV(0), nE(0) {
-        VertexLists.resize(np);
-        EdgeLists.resize(np);
-        VSizes.resize(np, 0);
-        ESizes.resize(np, 0);
-    }
-    
-    SSDistributedDaglist(int np, int total_nV, int total_nE) 
-        : num_clients(np), nV(total_nV), nE(total_nE) {
-        VertexLists.resize(np);
-        EdgeLists.resize(np);
-        VSizes.resize(np, 0);
-        ESizes.resize(np, 0);
-    }
-    
-    // Get all entries (vertices + edges) for a specific party
-    vector<SSDagEntry> getPartyEntries(int party_id) const {
-        vector<SSDagEntry> result;
-        result.reserve(VSizes[party_id] + ESizes[party_id]);
-        result.insert(result.end(), VertexLists[party_id].begin(), VertexLists[party_id].end());
-        result.insert(result.end(), EdgeLists[party_id].begin(), EdgeLists[party_id].end());
-        return result;
-    }
-    
-    // Get total entries across all parties
-    size_t totalSize() const {
-        return nV + nE;
-    }
-};
 
 static inline Ring pack_pair(Ring a, Ring b) {
   return (a << 32) | b;
@@ -395,98 +297,190 @@ inline Daglist build_daglist(Ring nV, const vector<pair<Ring, Ring>>& edges) {
   return Daglist(entries);
 }
 
-// Distribute daglist_graph across np parties
-// Input: daglist_graph (nV vertices + nE edges), np (number of parties)
-// Output: DistributedDaglist with np party graphs, where party i owns V/np vertices and their outgoing edges
-inline DistributedDaglist distribute_daglist(const Daglist& daglist_graph, int np) {
-  if (np <= 0) {
-    throw std::invalid_argument("Number of parties must be positive");
-  }
-  if (daglist_graph.empty()) {
-    return DistributedDaglist(np, 0, 0);
-  }
-
-  Ring nV = daglist_graph.nV;
-  Ring nE = daglist_graph.nE;
-
-  if (nV == 0) {
-    return DistributedDaglist(np, 0, nE);
-  }
-
-  // Calculate vertices per party
-  Ring verts_per_party = (nV + np - 1) / np;  // Ceiling division
+inline DistributedDaglist distribute_daglist(const Daglist& daglist, int num_clients) {
+  DistributedDaglist result(num_clients);
+  result.nV = daglist.nV;
+  result.nE = daglist.nE;
   
-  // Initialize result
-  DistributedDaglist result(np, nV, nE);
+  Ring nV = daglist.nV;
+  Ring nE = daglist.nE;
   
-  // Build a map from vertex ID to party assignment
-  // Party i owns vertices [i * verts_per_party, (i+1) * verts_per_party)
-  auto get_party = [&](Ring vertex_id) -> int {
-    Ring party = vertex_id / verts_per_party;
-    return std::min(static_cast<Ring>(party), static_cast<Ring>(np - 1));
-  };
-
-  // Distribute entries
-  for (const auto& entry : daglist_graph.entries) {
+  if (nV == 0 || num_clients == 0) return result;
+  
+  // Separate vertices and edges from daglist
+  result.VertexList.reserve(nV);
+  result.EdgeList.reserve(nE);
+  
+  for (const auto& entry : daglist.entries) {
     if (entry.isV == 1) {
-      // This is a vertex entry - assign to the party that owns this vertex
-      int party = get_party(entry.src);
-      result.VertexLists[party].push_back(entry);
-      result.VSizes[party]++;
+      result.VertexList.push_back(entry);
     } else {
-      // This is an edge entry - assign to the party that owns the source vertex
-      int party = get_party(entry.src);
-      result.EdgeLists[party].push_back(entry);
-      result.ESizes[party]++;
+      result.EdgeList.push_back(entry);
     }
   }
-
+  
+  // Step 1: Determine vertex ownership ranges
+  Ring vertices_per_client = nV / num_clients;
+  Ring remainder = nV % num_clients;
+  
+  vector<Ring> vertex_start(num_clients);
+  vector<Ring> vertex_end(num_clients);
+  Ring current_start = 0;
+  for (int i = 0; i < num_clients; ++i) {
+    vertex_start[i] = current_start;
+    Ring count = vertices_per_client + (i < remainder ? 1 : 0);
+    vertex_end[i] = current_start + count;
+    current_start = vertex_end[i];
+  }
+  
+  // Build edge index by destination
+  vector<vector<Ring>> edges_by_dest(nV);
+  for (Ring i = 0; i < result.EdgeList.size(); ++i) {
+    Ring dst = result.EdgeList[i].dst;
+    if (dst < nV) {
+      edges_by_dest[dst].push_back(i);
+    }
+  }
+  
+  // For each client
+  for (int client = 0; client < num_clients; ++client) {
+    // Step 2: Build sigg[client] - permutation (position map) that places owned vertices first
+    // ordered_vertices: list of vertex indices in new order
+    vector<Ring> ordered_vertices;
+    ordered_vertices.reserve(nV);
+    // owned vertices first
+    for (Ring v = vertex_start[client]; v < vertex_end[client]; ++v) ordered_vertices.push_back(v);
+    // then the rest in original order
+    for (Ring v = 0; v < vertex_start[client]; ++v) ordered_vertices.push_back(v);
+    for (Ring v = vertex_end[client]; v < nV; ++v) ordered_vertices.push_back(v);
+    
+    // build position map: for each original vertex index, position in reordered list
+    result.sigg[client].assign(nV, (Ring)0);
+    for (Ring pos = 0; pos < (Ring)ordered_vertices.size(); ++pos) {
+      result.sigg[client][ordered_vertices[pos]] = pos;
+    }
+    
+    // Step 3: Build SubgEdgeLists[client] - edges with dst at owned vertices
+    result.SubgEdgeLists[client].clear();
+    for (Ring v = vertex_start[client]; v < vertex_end[client]; ++v) {
+      for (Ring edge_idx : edges_by_dest[v]) {
+        result.SubgEdgeLists[client].push_back(result.EdgeList[edge_idx]);
+      }
+    }
+    
+    // Step 4: Build SubgVertexLists[client] - first min(2*|SubgEdges|, |VertexList|) entries of reordered VertexList
+    Ring num_subg_edges = result.SubgEdgeLists[client].size();
+    Ring vertex_cap = min(2 * num_subg_edges, (Ring)result.VertexList.size());
+    
+    result.SubgVertexLists[client].clear();
+    result.SubgVertexLists[client].reserve(vertex_cap);
+    // ordered_vertices gives vertex indices in the new order; take first vertex_cap of them
+    for (Ring i = 0; i < vertex_cap; ++i) {
+      Ring v_idx = ordered_vertices[i];
+      result.SubgVertexLists[client].push_back(result.VertexList[v_idx]);
+    }
+    
+    // Subgraph size
+    Ring subgraph_size = vertex_cap + num_subg_edges;
+    result.SubgraphSizes[client] = subgraph_size;
+    
+    // Build combined subgraph: SubgVertexLists[client] || SubgEdgeLists[client]
+    vector<DagEntry> subgraph;
+    subgraph.reserve(subgraph_size);
+    subgraph.insert(subgraph.end(), result.SubgVertexLists[client].begin(), result.SubgVertexLists[client].end());
+    subgraph.insert(subgraph.end(), result.SubgEdgeLists[client].begin(), result.SubgEdgeLists[client].end());
+    
+    // Step 5: Build sigs[client] - permutation from vertex order to source order
+    // Source order: for each vertex, vertex entry followed by its outgoing edges
+    
+    // Build mapping: which edges have which source (within subgraph)
+    unordered_map<Ring, vector<Ring>> edges_by_source;
+    for (Ring i = 0; i < num_subg_edges; ++i) {
+      Ring src = result.SubgEdgeLists[client][i].src;
+      edges_by_source[src].push_back(vertex_cap + i); // Position in combined subgraph
+    }
+    
+    vector<Ring> source_order;
+    source_order.reserve(subgraph_size);
+    
+    // For each vertex in SubgVertexLists (in order)
+    for (Ring i = 0; i < vertex_cap; ++i) {
+      Ring v = subgraph[i].src; // Vertex ID (src == dst for vertex entries)
+      source_order.push_back(i); // Add vertex entry
+      
+      // Add its outgoing edges that are in SubgEdgeLists
+      if (edges_by_source.count(v)) {
+        for (Ring edge_pos : edges_by_source[v]) {
+          source_order.push_back(edge_pos);
+        }
+      }
+    }
+    
+    // sigs: position map from vertex-order index (combined index) -> position in source order
+    result.sigs[client].assign(subgraph_size, (Ring)0);
+    for (Ring i = 0; i < (Ring)source_order.size(); ++i) {
+      result.sigs[client][source_order[i]] = i;
+    }
+    
+    // Step 6: Build sigd[client] - permutation from source order to destination order
+    // Destination order: for each vertex, incoming edges followed by vertex entry
+    
+    // Build mapping: which edges have which destination (within subgraph)
+    unordered_map<Ring, vector<Ring>> edges_by_dest_sub;
+    for (Ring i = 0; i < num_subg_edges; ++i) {
+      Ring dst = result.SubgEdgeLists[client][i].dst;
+      edges_by_dest_sub[dst].push_back(vertex_cap + i);
+    }
+    
+    vector<Ring> dest_order;
+    dest_order.reserve(subgraph_size);
+    
+    // For each vertex in SubgVertexLists (in order)
+    for (Ring i = 0; i < vertex_cap; ++i) {
+      Ring v = subgraph[i].dst; // Vertex ID
+      
+      // Add incoming edges first
+      if (edges_by_dest_sub.count(v)) {
+        for (Ring edge_pos : edges_by_dest_sub[v]) {
+          dest_order.push_back(edge_pos);
+        }
+      }
+      
+      // Then add vertex entry
+      dest_order.push_back(i);
+    }
+    
+    // Build reverse mapping: combined index -> position in dest order
+    vector<Ring> pos_in_dest(subgraph_size, (Ring)0);
+    for (Ring i = 0; i < (Ring)dest_order.size(); ++i) {
+      pos_in_dest[dest_order[i]] = i;
+    }
+    
+    // sigd: map from source-order position -> dest-order position
+    result.sigd[client].assign(subgraph_size, (Ring)0);
+    for (Ring i = 0; i < (Ring)source_order.size(); ++i) {
+      Ring item = source_order[i]; // combined index
+      result.sigd[client][i] = pos_in_dest[item];
+    }
+    
+    // Step 7: Build sigv[client] - permutation from destination order to vertex order
+    // Vertex order is the original: SubgVertexLists || SubgEdgeLists (indices 0 to subgraph_size-1)
+    
+    // Build reverse mapping: combined index -> position in vertex-order (identity: 0..subgraph_size-1)
+    vector<Ring> pos_in_vertex(subgraph_size);
+    for (Ring i = 0; i < subgraph_size; ++i) pos_in_vertex[i] = i;
+    
+    // sigv: map from dest-order position -> vertex-order position
+    result.sigv[client].assign(subgraph_size, (Ring)0);
+    for (Ring i = 0; i < (Ring)dest_order.size(); ++i) {
+      Ring item = dest_order[i]; // combined index
+      result.sigv[client][i] = pos_in_vertex[item];
+    }
+  }
+  
   return result;
 }
 
-// Build a complete Daglist from a DistributedDaglist
-// Reconstructs the full graph by merging all party entries
-inline Daglist build_daglist_from_distributed(const DistributedDaglist& dist_daglist) {
-  vector<DagEntry> all_entries;
-  all_entries.reserve(dist_daglist.nV + dist_daglist.nE);
-  
-  // Collect all vertices first, then all edges (maintaining vertex-order structure)
-  for (int i = 0; i < dist_daglist.num_clients; ++i) {
-    all_entries.insert(all_entries.end(), 
-                      dist_daglist.VertexLists[i].begin(), 
-                      dist_daglist.VertexLists[i].end());
-  }
-  
-  for (int i = 0; i < dist_daglist.num_clients; ++i) {
-    all_entries.insert(all_entries.end(), 
-                      dist_daglist.EdgeLists[i].begin(), 
-                      dist_daglist.EdgeLists[i].end());
-  }
-  
-  return Daglist(all_entries);
-}
-
-// Build a complete SSDaglist from an SSDistributedDaglist
-// Reconstructs the full graph with secret-shared wires by merging all party entries
-inline SSDaglist build_ssdaglist_from_distributed(const SSDistributedDaglist& dist_daglist) {
-  vector<SSDagEntry> all_entries;
-  all_entries.reserve(dist_daglist.nV + dist_daglist.nE);
-  
-  // Collect all vertices first, then all edges (maintaining vertex-order structure)
-  for (int i = 0; i < dist_daglist.num_clients; ++i) {
-    all_entries.insert(all_entries.end(), 
-                      dist_daglist.VertexLists[i].begin(), 
-                      dist_daglist.VertexLists[i].end());
-  }
-  
-  for (int i = 0; i < dist_daglist.num_clients; ++i) {
-    all_entries.insert(all_entries.end(), 
-                      dist_daglist.EdgeLists[i].begin(), 
-                      dist_daglist.EdgeLists[i].end());
-  }
-  
-  return SSDaglist(all_entries, dist_daglist.nV, dist_daglist.nE);
-}
 
 // Create circuit inputs from a Daglist
 // Populates the inputs map with values from the daglist entries based on wire assignments
@@ -564,145 +558,6 @@ inline void set_daglist_inputs(
     std::unordered_map<wire_t, Ring>& inputs) {
   size_t wire_idx = 0;
   set_daglist_inputs(daglist, input_wires, inputs, wire_idx);
-}
-
-
-// Generate random inputs for changing data of vertices and edges in a DistributedDaglist
-// Returns a DistributedDaglist with ChangeV and ChangeE populated
-// ChangeV[i][j] = new_data for j-th vertex of party i (0 if no change)
-// ChangeE[i][j] = new_data for j-th edge of party i (0 if no change)
-// Input: dist_daglist - the distributed daglist
-//        num_changes - total number of entries to modify across all parties
-//        seed - random seed for reproducibility
-inline DistributedDaglist generate_random_data_updates(const DistributedDaglist& dist_daglist, 
-                                                       Ring num_changes, 
-                                                       Ring seed = 42) {
-  
-  // Copy the input distributed daglist
-  DistributedDaglist result = dist_daglist;
-  
-  // Initialize ChangeV and ChangeE with zeros
-  for (int p = 0; p < result.num_clients; ++p) {
-    result.ChangeV[p].resize(result.VSizes[p], 0);
-    result.ChangeE[p].resize(result.ESizes[p], 0);
-    // Initialize isChange vectors (0 = no change, 1 = changed)
-    result.isChangeV[p].resize(result.VSizes[p], 0);
-    result.isChangeE[p].resize(result.ESizes[p], 0);
-  }
-  
-  if (num_changes == 0 || dist_daglist.totalSize() == 0) {
-    return result;
-  }
-  
-  std::mt19937_64 rng(seed);
-  
-  // Collect all possible entries to update (party_id, is_vertex, local_idx)
-  struct EntryLocation {
-    int party_id;
-    bool is_vertex;
-    Ring local_idx;
-  };
-  
-  std::vector<EntryLocation> all_entries;
-  for (int p = 0; p < dist_daglist.num_clients; ++p) {
-    for (Ring i = 0; i < dist_daglist.VSizes[p]; ++i) {
-      all_entries.push_back({p, true, i});
-    }
-    for (Ring i = 0; i < dist_daglist.ESizes[p]; ++i) {
-      all_entries.push_back({p, false, i});
-    }
-  }
-  
-  if (all_entries.empty()) {
-    return result;
-  }
-  
-  // Sample num_changes entries randomly without replacement
-  Ring actual_changes = std::min(num_changes, static_cast<Ring>(all_entries.size()));
-  std::shuffle(all_entries.begin(), all_entries.end(), rng);
-  
-  // Generate random data values and populate ChangeV/ChangeE
-  std::uniform_int_distribution<Ring> data_dist(1, 1000);
-  
-  for (Ring i = 0; i < actual_changes; ++i) {
-    const auto& entry = all_entries[i];
-    Ring new_data = data_dist(rng);
-    
-    if (entry.is_vertex) {
-      result.ChangeV[entry.party_id][entry.local_idx] = new_data;
-      result.isChangeV[entry.party_id][entry.local_idx] = 1;
-    } else {
-      result.ChangeE[entry.party_id][entry.local_idx] = new_data;
-      result.isChangeE[entry.party_id][entry.local_idx] = 1;
-    }
-  }
-  
-  return result;
-}
-
-// Generate random deletion tags for vertices and edges in a DistributedDaglist
-// Returns a DistributedDaglist with isDelV and isDelE populated
-// isDelV[i][j] = 1 if j-th vertex of party i should be deleted, 0 otherwise
-// isDelE[i][j] = 1 if j-th edge of party i should be deleted, 0 otherwise
-// Input: dist_daglist - the distributed daglist
-//        num_deletes - total number of entries to delete across all parties
-//        seed - random seed for reproducibility
-inline DistributedDaglist generate_random_entry_deletes(const DistributedDaglist& dist_daglist, 
-                                                        Ring num_deletes, 
-                                                        Ring seed = 42) {
-  
-  // Copy the input distributed daglist
-  DistributedDaglist result = dist_daglist;
-  
-  // Initialize isDelV and isDelE with zeros
-  for (int p = 0; p < result.num_clients; ++p) {
-    result.isDelV[p].resize(result.VSizes[p], 0);
-    result.isDelE[p].resize(result.ESizes[p], 0);
-  }
-  
-  if (num_deletes == 0 || dist_daglist.totalSize() == 0) {
-    return result;
-  }
-  
-  std::mt19937_64 rng(seed);
-  
-  // Collect all possible entries to delete (party_id, is_vertex, local_idx)
-  struct EntryLocation {
-    int party_id;
-    bool is_vertex;
-    Ring local_idx;
-  };
-  
-  std::vector<EntryLocation> all_entries;
-  for (int p = 0; p < dist_daglist.num_clients; ++p) {
-    for (Ring i = 0; i < dist_daglist.VSizes[p]; ++i) {
-      all_entries.push_back({p, true, i});
-    }
-    for (Ring i = 0; i < dist_daglist.ESizes[p]; ++i) {
-      all_entries.push_back({p, false, i});
-    }
-  }
-  
-  if (all_entries.empty()) {
-    return result;
-  }
-  
-  // Sample num_deletes entries randomly without replacement
-  Ring actual_deletes = std::min(num_deletes, static_cast<Ring>(all_entries.size()));
-  std::shuffle(all_entries.begin(), all_entries.end(), rng);
-  
-  // Mark entries for deletion
-  for (Ring i = 0; i < actual_deletes; ++i) {
-    const auto& entry = all_entries[i];
-    
-    if (entry.is_vertex) {
-      result.isDelV[entry.party_id][entry.local_idx] = 1;
-    } else {
-      result.isDelE[entry.party_id][entry.local_idx] = 1;
-    }
-  }
-  
-  return result;
 }
 
 

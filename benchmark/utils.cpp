@@ -1,4 +1,4 @@
-#include "utils.h"
+  #include "utils.h"
 
 #include <NTL/BasicThreadPool.h>
 #include <NTL/ZZ_p.h>
@@ -368,4 +368,197 @@ std::vector<common::utils::wire_t> addSubCircGather(
     return data_values_diff;
 }
 
+std::vector<common::utils::wire_t> addSubCircApplyE(
+    common::utils::Circuit<common::utils::Ring>& circ,
+    const std::vector<common::utils::wire_t>& position_map_shares,
+    const std::vector<common::utils::wire_t>& data_values,
+    size_t num_groups,
+    std::vector<std::vector<int>> permutation) {
+    
+    return data_values;
+    
+}
 
+
+std::vector<std::vector<common::utils::wire_t>> addSubCircDecompose(
+    common::utils::Circuit<common::utils::Ring>& circ,
+    const std::vector<std::vector<common::utils::wire_t>>& position_maps,
+    const std::vector<common::utils::wire_t>& data_values,
+    size_t num_groups,
+    std::vector<std::vector<int>> permutation) {
+    
+    size_t vec_size = data_values.size();
+    size_t nP = position_map_shares.size();
+    
+    // Validate that all position_map_shares have the same size as data_values
+    for (size_t i = 0; i < nP; ++i) {
+        if (position_map_shares[i].size() != vec_size) {
+            throw std::invalid_argument("All position_map_shares must have the same size as data_values");
+        }
+    }
+    
+    // Step 1: Apply kAmortzdPnS gate to generate nP output vectors (one per party)
+    auto amortized_outputs = circ.addMOGate(common::utils::GateType::kAmortzdPnS, data_values, permutation);
+    
+    // Step 2: Rewire each output vector with its corresponding position_map
+    std::vector<std::vector<common::utils::wire_t>> rewired_outputs(nP);
+    for (size_t i = 0; i < nP; ++i) {
+        // Rewire the i-th amortized output using the i-th reconstructed position map
+        std::vector<std::vector<common::utils::wire_t>> single_payload = {amortized_outputs[i]};
+        auto rewired = circ.addRewireGate(position_maps[i], single_payload);
+        rewired_outputs[i] = rewired[0];
+    }
+    
+    return rewired_outputs;
+}
+
+
+
+// std::vector<std::vector<common::utils::wire_t>> addSubCircDCC(
+//     common::utils::Circuit<common::utils::Ring>& circ,
+//     const std::vector<common::utils::wire_t>& vertex_data,
+//     const std::vector<std::vector<common::utils::wire_t>>& edge_data,
+//     const std::vector<std::vector<common::utils::wire_t>>& sigg,
+//     const std::vector<std::vector<common::utils::wire_t>>& sigs,
+//     const std::vector<std::vector<common::utils::wire_t>>& sigd,
+//     const std::vector<std::vector<common::utils::wire_t>>& sigv) {
+
+//     int num_vert = vertex_data.size();
+//     int nP = edge_data.size();
+    
+//     std::vector<std::vector<int>> permutation;
+//     std::vector<int> tmp_perm(num_vert);
+//     for (int i = 0; i < num_vert; ++i) {
+//         tmp_perm[i] = i;
+//     }
+//     permutation.push_back(tmp_perm);
+//     if (pid == 0) {
+//         for (int i = 1; i < nP; ++i) {
+//             permutation.push_back(tmp_perm);
+//         }
+//     }
+
+//     // Step 1: Apply kAmortzdPnS gate to generate nP output vectors (one per party)
+//     auto amortizedPnS_outputs = circ.addMOGate(common::utils::GateType::kAmortzdPnS, vertex_data, permutation);
+
+//     // Step 2: Rewire each output vector with its corresponding position_map
+//     std::vector<std::vector<common::utils::wire_t>> rewired_outputs(nP);
+//     for (size_t i = 0; i < nP; ++i) {
+//         // Rewire the i-th amortized output using the i-th reconstructed position map
+//         std::vector<std::vector<common::utils::wire_t>> single_payload = {amortizedPnS_outputs[i]};
+//         auto rewired = circ.addRewireGate(position_maps[i], single_payload);
+//         rewired_outputs[i] = rewired[0];
+//     }
+
+//     // Generate subgraphs
+//     for (int i = 0; i < nP; ++i) {
+
+//         int num_subg_vert = std::min(num_vert, 2 * edge_data[i].size());
+
+//         std::vector<wire_t> subg_dag_list_party;
+//         subg_dag_list_party.reserve(num_subg_vert + subg_edge_list[i].size());
+
+//         // push num_subg_vert entries from rewired_outputs[i]
+//         subg_dag_list_party.insert(subg_dag_list_party.end(), rewired_outputs[i].begin(), rewired_outputs[i].begin() + num_subg_vert);   
+
+//         // push all entries from edge_data[i]
+//         subg_dag_list_party.insert(subg_dag_list_party.end(), edge_data[i].begin(), edge_data[i].end());
+
+//         // PERMUTATION SETUP
+//         std::vector<std::vector<int>> subg_permutation;
+//         std::vector<int> subg_tmp_perm(subg_dag_list_party.size());
+//         for (int j = 0; j < subg_tmp_perm.size(); ++j) {
+//             subg_tmp_perm[j] = j;
+//         }
+//         subg_permutation.push_back(subg_tmp_perm);
+//         if (pid == 0) {
+//             for (int j = 1; j < nP; ++j) {
+//                 subg_permutation.push_back(subg_tmp_perm);
+//             }
+//         }
+
+
+//         // PROPAGATE
+//         // Step 1: Compute differences for group boundaries
+//         // data_values'[0] = data_values[0]
+//         // data_values'[i] = data_values[i] - data_values[i-1] for i = 1 to num_groups-1
+//         // data_values'[i] = 0 for i >= num_groups
+//         std::vector<common::utils::wire_t> data_values_diff(vec_size);
+
+//         size_t vec_size = subg_dag_list_party.size();
+//         for (size_t i = 0; i < vec_size; ++i) {
+//             if (i == 0) {
+//                 // data_values'[0] = data_values[0]
+//                 data_values_diff[i] = data_values[i];
+//             } else if (i < num_subg_vert) {
+//                 // For i from 1 to num_subg_vert-1: compute differences
+//                 // data_values'[i] = data_values[i] - data_values[i-1]
+//                 data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values[i], data_values[i - 1]);
+//             } else {
+//                 // For i >= num_subg_vert: set to 0
+//                 // data_values'[i] = 0
+//                 data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values[i], data_values[i]);
+//             }
+//         }
+
+//         // Step 2-4: Shuffle, reconstruct, and rewire using addSubCircPermList
+//         std::vector<std::vector<common::utils::wire_t>> payloads = {data_values_diff};
+//         auto rewired_outputs = addSubCircPermList(circ, position_map_shares, payloads, permutation);
+//         auto reordered_data = rewired_outputs[0];
+
+//         // Step 5: Compute prefix sum of reordered data
+//         std::vector<common::utils::wire_t> prefix_sum(vec_size);
+        
+//         prefix_sum[0] = reordered_data[0];
+//         for (size_t i = 1; i < vec_size; ++i) {
+//             prefix_sum[i] = circ.addGate(common::utils::GateType::kAdd, prefix_sum[i - 1], reordered_data[i]);
+//         }
+
+
+
+//         // Gather   
+//         // Step 1: Compute prefix sum of data values
+//         std::vector<common::utils::wire_t> prefix_sum(vec_size);
+//         prefix_sum[0] = data_values[0];
+//         for (size_t i = 1; i < vec_size; ++i) {
+//             prefix_sum[i] = circ.addGate(common::utils::GateType::kAdd, prefix_sum[i - 1], data_values[i]);
+//         }
+
+//         // Step 2-4: Shuffle, reconstruct, and rewire using addSubCircPermList
+//         std::vector<std::vector<common::utils::wire_t>> payloads = {prefix_sum, data_values};
+//         auto rewired_outputs = addSubCircPermList(circ, position_map_shares, payloads, permutation);
+//         auto reordered_data = rewired_outputs[0];
+//         auto rewired_data_values = rewired_outputs[1];
+
+//         // Step 5: Compute differences
+//         // data_values'[0] = reordered_data[0]
+//         // data_values'[i] = reordered_data[i] - reordered_data[i-1] - data_values[i] for i = 1 to num_groups-1
+//         // data_values'[i] = 0 for i >= num_groups
+//         std::vector<common::utils::wire_t> data_values_diff(vec_size);
+        
+//         for (size_t i = 0; i < vec_size; ++i) {
+//             if (i == 0) {
+//                 // data_values'[0] = reordered_data[0] - data_values[0]
+//                 data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, reordered_data[i], rewired_data_values[i]);
+//             } else if (i < num_groups) {
+//                 // For i from 1 to num_groups-1: compute differences
+//                 // data_values'[i] = reordered_data[i] - reordered_data[i-1] - data_values[i]
+//                 data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, reordered_data[i], reordered_data[i - 1]);
+//                 data_values_diff[i] = circ.addGate(common::utils::GateType::kSub, data_values_diff[i], rewired_data_values[i]);
+//             } else {
+//                 // For i >= num_groups: set to 0
+//                 // data_values'[i] = 0
+//                 data_values_diff[i] = 0;
+//             }
+//         }
+
+
+
+//     }
+
+    
+    
+
+    
+
+// }
