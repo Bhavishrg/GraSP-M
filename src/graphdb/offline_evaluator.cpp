@@ -77,7 +77,7 @@ void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
     share.pushValue(rand_sh_sec[idx_rand_sh_sec]);
     idx_rand_sh_sec++;
 
-    tag = global_key*secret - tagn;
+    tag = global_key*secret - tagn; //global_key use has to be fixed.
     share.pushTag(tag);
   }
 }
