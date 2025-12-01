@@ -26,7 +26,8 @@ OfflineEvaluator::OfflineEvaluator(int nP, int my_id,
       { } // tpool_ = std::make_shared<ThreadPool>(threads); }
 
 
-void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AuthAddShare<Ring>& share) {
+void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AuthAddShare<Ring>& share,
+                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec) {
   Ring val = Ring(0);
   Ring valn = Ring(0);
   Ring tag = Ring(0);
@@ -51,6 +52,8 @@ void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AuthAddSh
     else {
       tag = global_key*valn - tagn;
       share.pushTag(tag);
+      rand_sh_sec.push_back(tag);
+      idx_rand_sh_sec++;
     }
   }
 }
@@ -79,6 +82,8 @@ void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
 
     tag = global_key*secret - tagn; //global_key use has to be fixed.
     share.pushTag(tag);
+    rand_sh_sec.push_back(tag);
+    idx_rand_sh_sec++;
   }
 }
 
@@ -92,7 +97,7 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
       switch (gate->type) {
         case common::utils::GateType::kInp: {
           AuthAddShare<Ring> share_r;
-          randomShare(nP_, id_, rgen_, share_r);
+          randomShare(nP_, id_, rgen_, share_r, rand_sh_sec, idx_rand_sh_sec);
           auto pid = input_pid_map.at(gate->out);
           auto pregate = std::make_unique<PreprocInput<Ring>>(pid, share_r);
           preproc_.gates[gate->out] = std::move(pregate);

@@ -49,7 +49,8 @@ class OfflineEvaluator {
                    common::utils::LevelOrderedCircuit circ, int threads, int seed = 200, int latency = 100, bool use_pking = true);
 
   // Generate sharing of a random unknown value.
-  static void randomShare(int nP, int pid, RandGenPool& rgen, AuthAddShare<Ring>& share);
+  static void randomShare(int nP, int pid, RandGenPool& rgen, AuthAddShare<Ring>& share,
+                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
 
   // Generate sharing of a random value known to party. Should be called by
   // dealer when other parties call other variant.
