@@ -11,6 +11,8 @@ endmacro()
 # TODO: Add benchmark executables here when malicious implementations are ready
 # Example: add_benchmark(permAndSh)
 
+add_benchmark(add)
+
 add_custom_target(benchmarks)
 if(benchbin)
     add_dependencies(benchmarks ${benchbin})

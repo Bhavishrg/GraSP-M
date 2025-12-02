@@ -18,113 +18,159 @@ OfflineEvaluator::OfflineEvaluator(int nP, int my_id,
       id_(my_id),
       latency_(latency),
       use_pking_(use_pking),
-      rgen_(my_id, seed), 
+      rgen_(my_id, nP, seed), 
       network_(std::move(network)),
-      circ_(std::move(circ))
-      // preproc_(circ.num_gates)
+      circ_(std::move(circ)) 
+      
+      {} // tpool_ = std::make_shared<ThreadPool>(threads); }
 
-      { } // tpool_ = std::make_shared<ThreadPool>(threads); }
 
-
-void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AuthAddShare<Ring>& share,
-                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec) {
-  Ring val = Ring(0);
-  Ring valn = Ring(0);
-  Ring tag = Ring(0);
-  Ring tagn = Ring(0);
+void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AuthAddShare& share,
+                                         std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec) {
+  std::cout << "Random share for party " << pid << std::endl;
   if (pid == 0) {
+    Field val = Field(0);
+    Field valn = Field(0);
+    Field tag = Field(0);
+    Field tagn = Field(0);
+    Field key = share.keySh();
+
     for (int i = 1; i <= nP; i++) {
-      rgen.pi(i).random_data(&val, sizeof(Ring));
-      valn += val;
-      if(i != nP) {
-        rgen.pi(i).random_data(&tag, sizeof(Ring));
-        tagn += tag;
-      }
-      else {
-        //Generate tag for party nP and store in rand_sh_sec
-        tagn = global_key*valn - tagn;
-        rand_sh_sec.push_back(tagn);
-      }
-    } 
-    
-    //Push share and tag for TP
-    share.pushValue(valn);
-    share.pushTag(global_key*valn);
-  } else {
-    rgen.p0().random_data(&val, sizeof(Ring));
-    share.pushValue(val);
-    if(pid != nP) {
-      rgen.p0().random_data(&tag, sizeof(Ring));
-      share.pushTag(tag);
+        rgen.pi(i).random_data(&val, sizeof(Field));
+        randomizeZZp(rgen.pi(i), val, sizeof(Field));
+        valn += val;
     }
-    else {
-      share.pushTag(rand_sh_sec[idx_rand_sh_sec]);
-      idx_rand_sh_sec++;
+    
+    tagn = key * valn;
+    share.pushValue(valn);
+    share.pushTag(tagn);
+
+    for (int i = 1; i < nP; i++) {
+       rgen.pi(i).random_data(&tag, sizeof(Field));
+       randomizeZZp(rgen.pi(i), tag, sizeof(Field));
+        tagn -= tag;
+    }
+    rand_sh_sec.push_back(tagn);
+
+  } else {
+    Field val;
+    Field tag;
+    if (pid != nP) {
+        rgen.p0().random_data(&val, sizeof(Field));
+        randomizeZZp(rgen.p0(), val, sizeof(Field));
+        rgen.p0().random_data(&tag, sizeof(Field));
+        randomizeZZp(rgen.p0(), tag, sizeof(Field));
+        share.pushValue(val);
+        share.pushTag(tag);
+    } else {
+        rgen.p0().random_data(&val, sizeof(Field));
+        randomizeZZp(rgen.p0(), val, sizeof(Field));
+        share.pushValue(val);
+        share.pushTag(rand_sh_sec[idx_rand_sh_sec]);
+        idx_rand_sh_sec++;
     }
   }
 }
 
 void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
-                                         AuthAddShare<Ring>& share, Ring secret,
-                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec) {
-  Ring val = Ring(0);
-  Ring valn = Ring(0);
-  Ring tag = Ring(0);
-  Ring tagn = Ring(0);
-
+                                         AuthAddShare& share, Field secret,
+                                         std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec) {
   if (pid == 0) {
-    for (int i = 1; i < nP; i++) {
-      rgen.pi(i).random_data(&val, sizeof(Ring));
-      valn += val;
 
-      rgen.pi(i).random_data(&tag, sizeof(Ring));
-      tagn += tag;
-    }
-    //Generate share and tag for party nP and store in rand_sh_sec
-    valn = secret - valn;
-    rand_sh_sec.push_back(valn);
-    tagn = global_key*secret - tagn;
-    rand_sh_sec.push_back(tagn);
+    Field key = share.keySh();
+
     
-    //Push share and tag for TP
-    share.pushValue(secret);
-    share.pushTag(global_key*secret);
-  } else {
-    if (pid != nP) {
-      rgen.p0().random_data(&val, sizeof(Ring));
-      share.pushValue(val);
 
-      rgen.p0().random_data(&tag, sizeof(Ring));
-      share.pushTag(tag);
+    Field val = Field(0);
+    Field valn = secret;
+
+    Field tag = key * secret;
+    Field tagn = Field(0);
+
+    share.pushValue(valn);
+    share.pushTag(tagn);
+
+    
+
+    for (int i = 1; i < nP; i++) {
+
+        randomizeZZp(rgen.pi(i), val, sizeof(Field));
+        randomizeZZp(rgen.pi(i), tag, sizeof(Field));
+        valn -= val;
+        tagn -= tag;
+    }
+    
+    rand_sh_sec.push_back(valn);
+    rand_sh_sec.push_back(tagn);
+
+    
+
+  } else {
+    Field val;
+    Field tag;
+    if (pid != nP) {
+
+        randomizeZZp(rgen.p0(), val, sizeof(Field));
+        randomizeZZp(rgen.p0(), tag, sizeof(Field));
+        share.pushValue(val);
+        share.pushTag(tag);
+
     } else {
-      //Retrieve share and tag for party nP from rand_sh_sec
-      share.pushValue(rand_sh_sec[idx_rand_sh_sec]);
-      idx_rand_sh_sec++;
-      share.pushTag(rand_sh_sec[idx_rand_sh_sec]);
-      idx_rand_sh_sec++;
+
+        share.pushValue(rand_sh_sec[idx_rand_sh_sec]);
+        idx_rand_sh_sec++;
+        share.pushTag(rand_sh_sec[idx_rand_sh_sec]);
+        idx_rand_sh_sec++;
+        
     }
   }
 }
 
 void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map, 
-                                         std::vector<Ring>& rand_sh_sec) {
+                                         std::vector<Field>& rand_sh_sec)  {
   size_t idx_rand_sh_sec = 0;
   size_t b_idx_rand_sh_sec = 0;
 
   for (const auto& level : circ_.gates_by_level) {
     for (const auto& gate : level) {
       switch (gate->type) {
+        // case common::utils::GateType::kInp: {
+        //   AuthAddShare<Ring> share_r;
+        //   randomShare(nP_, id_, rgen_, share_r, rand_sh_sec, idx_rand_sh_sec);
+        //   auto pid = input_pid_map.at(gate->out);
+        //   auto pregate = std::make_unique<PreprocInput<Ring>>(pid, share_r);
+        //   preproc_.gates[gate->out] = std::move(pregate);
+        //   break;
+        // }
+
         case common::utils::GateType::kInp: {
-          AuthAddShare<Ring> share_r;
-          randomShare(nP_, id_, rgen_, share_r, rand_sh_sec, idx_rand_sh_sec);
-          auto pid = input_pid_map.at(gate->out);
-          auto pregate = std::make_unique<PreprocInput<Ring>>(pid, share_r);
-          preproc_.gates[gate->out] = std::move(pregate);
-          break;
+            auto pid = input_pid_map.at(gate->out);
+
+            Field r = Field(0);
+
+            // Sample the mask value
+            if (id_ == 0) {
+              randomizeZZp(rgen_.pi(pid), r, sizeof(Field));
+            }
+            else if (pid == id_) {
+              randomizeZZp(rgen_.p0(), r, sizeof(Field));
+            }
+
+            std::cout << "sampling done " << std::endl;
+            
+            // Generate authenticated shares of the mask
+            AuthAddShare r_sh;
+            randomShareSecret(nP_, id_, rgen_, r_sh, r, rand_sh_sec, idx_rand_sh_sec);
+
+            std::cout << "randomShareSecret done " << std::endl;
+
+            auto pregate = std::make_unique<PreprocInput>(pid, r_sh, r);
+            preproc_.gates[gate->out] = std::move(pregate);
+            break;
         }
 
         case common::utils::GateType::kRec: {
-          auto pregate = std::make_unique<PreprocRecGate<Ring>>();
+          auto pregate = std::make_unique<PreprocRecGate>();
           // King party (party 1) receives the reconstructed value
           bool is_king = (id_ == 1);
           pregate->Pking = is_king;
@@ -142,10 +188,11 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
 
 
 void OfflineEvaluator::setWireMasks(const std::unordered_map<common::utils::wire_t, int>& input_pid_map) {
-  std::vector<Ring> rand_sh_sec;
+  std::vector<Field> rand_sh_sec;
 
   if (id_ == 0) {
     setWireMasksParty(input_pid_map, rand_sh_sec);
+    std::cout << "Number of random shares: " << rand_sh_sec.size() << std::endl;
 
     size_t rand_sh_sec_num = rand_sh_sec.size();
     size_t arith_comm = rand_sh_sec_num;
@@ -155,12 +202,12 @@ void OfflineEvaluator::setWireMasks(const std::unordered_map<common::utils::wire
 
     network_->send(nP_, lengths.data(), sizeof(size_t) * lengths.size());
 
-    std::vector<Ring> offline_arith_comm(arith_comm);
+    std::vector<Field> offline_arith_comm(arith_comm);
 
     for (size_t i = 0; i < rand_sh_sec_num; i++) {
       offline_arith_comm[i] = rand_sh_sec[i];
     }
-    network_->send(nP_, offline_arith_comm.data(), sizeof(Ring) * arith_comm);
+    network_->send(nP_, offline_arith_comm.data(), sizeof(Field) * arith_comm);
 
   } else if (id_ != nP_) {
     setWireMasksParty(input_pid_map, rand_sh_sec);
@@ -173,8 +220,8 @@ void OfflineEvaluator::setWireMasks(const std::unordered_map<common::utils::wire
     size_t arith_comm = lengths[0];
     size_t rand_sh_sec_num = lengths[1];
 
-    std::vector<Ring> offline_arith_comm(arith_comm);
-    network_->recv(0, offline_arith_comm.data(), sizeof(Ring) * arith_comm);
+    std::vector<Field> offline_arith_comm(arith_comm);
+    network_->recv(0, offline_arith_comm.data(), sizeof(Field) * arith_comm);
 
     rand_sh_sec.resize(rand_sh_sec_num);
     for (int i = 0; i < rand_sh_sec_num; i++) {
@@ -185,12 +232,16 @@ void OfflineEvaluator::setWireMasks(const std::unordered_map<common::utils::wire
   }
 }
 
-PreprocCircuit<Ring> OfflineEvaluator::getPreproc() {
+PreprocCircuit OfflineEvaluator::getPreproc() {
   return std::move(preproc_);
 }
 
-PreprocCircuit<Ring> OfflineEvaluator::run(const std::unordered_map<common::utils::wire_t, int>& input_pid_map) {
+PreprocCircuit OfflineEvaluator::run(const std::unordered_map<common::utils::wire_t, int>& input_pid_map) {
+  initializeGlobalKey(nP_, id_, rgen_, network_);
+
+  std::cout << "Running offline evaluation" << std::endl;
   setWireMasks(input_pid_map);
+
   return std::move(preproc_);
 }
 

@@ -15,61 +15,61 @@
 using namespace common::utils;
 
 namespace graphdb {
-  class OnlineEvaluator {
-    int nP_;
-    int id_;
-    int latency_;  // Network latency in microseconds
-    bool use_pking_;  // Use king party for reconstruction
-    RandGenPool rgen_;
-    std::shared_ptr<io::NetIOMP> network_;
-    PreprocCircuit<Ring> preproc_;
-    common::utils::LevelOrderedCircuit circ_;
-    std::vector<Ring> wires_;
-    std::shared_ptr<common::utils::ThreadPool> tpool_;
+class OnlineEvaluator {
+  int nP_;
+  int id_;
+  int latency_;  // Network latency in microseconds
+  bool use_pking_;  // Use king party for reconstruction
+  RandGenPool rgen_;
+  std::shared_ptr<io::NetIOMP> network_;
+  PreprocCircuit preproc_;
+  common::utils::LevelOrderedCircuit circ_;
+  std::vector<AuthAddShare> wires_;
+  AuthAddShare check;
+  std::shared_ptr<common::utils::ThreadPool> tpool_;
 
-    // Helper function to reconstruct shares towards a designated party
-    static void reconstructToParty(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
-                                  const std::vector<Ring>& shares_list,
-                                  std::vector<Ring>& reconstructed_list,
-                                  int target_party, int latency);
+  // Helper function to reconstruct shares towards a designated party
+  static void reconstructToParty(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
+                                const std::vector<AuthAddShare>& shares_list,
+                                std::vector<Field>& reconstructed_list,
+                                int target_party, int latency);
 
-    // Helper function to reconstruct shares via king party or direct all-to-all
-    static void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
-                           const std::vector<Ring>& shares_list,
-                           std::vector<Ring>& reconstructed_list,
-                           bool via_pking, int latency);
+  // Helper function to reconstruct shares via king party or direct all-to-all
+  static void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
+                         const std::vector<std::pair<Field, Field>>& shares_list,
+                         std::vector<Field>& reconstructed_list, std::pair<Field, Field> check,
+                         bool via_pking, int latency);
 
   public:
-    OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
-                    PreprocCircuit<Ring> preproc,
-                    common::utils::LevelOrderedCircuit circ,
-                    int threads, int seed = 200, int latency = 100, bool use_pking = true);
+  
+  OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
+                  PreprocCircuit preproc,
+                  common::utils::LevelOrderedCircuit circ,
+                  int threads, int seed = 200, int latency = 100, bool use_pking = true);
 
-    OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
-                    PreprocCircuit<Ring> preproc,
-                    common::utils::LevelOrderedCircuit circ,
-                    std::shared_ptr<common::utils::ThreadPool> tpool, int seed = 200, int latency = 100, bool use_pking = true);
+  OnlineEvaluator(int nP, int id, std::shared_ptr<io::NetIOMP> network,
+                  PreprocCircuit preproc,
+                  common::utils::LevelOrderedCircuit circ,
+                  std::shared_ptr<common::utils::ThreadPool> tpool, int seed = 200, int latency = 100, bool use_pking = true);
 
-    void setInputs(const std::unordered_map<common::utils::wire_t, Ring> &inputs);
+  void setInputs(const std::unordered_map<common::utils::wire_t, Field> &inputs);
 
-    void setRandomInputs();
+  void setRandomInputs();
 
-    // void evaluateGatesAtDepthPartySend(size_t depth, std::vector<Ring> &mult_vals);
+  // void evaluateGatesAtDepthPartySend(size_t depth, std::vector<Ring> &mult_vals);
 
-    // void evaluateGatesAtDepthPartyRecv(size_t depth, std::vector<Ring> &mult_vals);
+  // void evaluateGatesAtDepthPartyRecv(size_t depth, std::vector<Ring> &mult_vals);
     
-    void RecEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates);
+  void RecEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates);
 
-    void recEvaluate(const std::vector<common::utils::FIn1Gate> &rec_gates);
+  void recEvaluate(const std::vector<common::utils::FIn1Gate> &rec_gates);
 
-    void evaluateGatesAtDepth(size_t depth);
+  void evaluateGatesAtDepth(size_t depth);
 
-    std::vector<Ring> getOutputs();
+  std::vector<Field> getOutputs();
 
-    Ring reconstruct(AuthAddShare<Ring> &shares);
-
-    // Evaluate online phase for circuit
-    std::vector<Ring> evaluateCircuit(const std::unordered_map<common::utils::wire_t, Ring> &inputs);
+  // Evaluate online phase for circuit
+  std::vector<Field> evaluateCircuit(const std::unordered_map<common::utils::wire_t, Field> &inputs);
   };
 
 }; // namespace graphdb

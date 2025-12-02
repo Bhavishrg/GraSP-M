@@ -9,40 +9,55 @@ using namespace common::utils;
 
 namespace graphdb {
 // Preprocessed data for a gate.
-template <class R>
 struct PreprocGate {
   PreprocGate() = default;
   virtual ~PreprocGate() = default;
 };
 
-template <class R>
-using preprocg_ptr_t = std::unique_ptr<PreprocGate<R>>;
+using preprocg_ptr_t = std::unique_ptr<PreprocGate>;
 
-template <class R>
-struct PreprocInput : public PreprocGate<R> {
+
+struct PreprocInput : public PreprocGate {
   // ID of party providing input on wire.
   int pid{};
   // Random share for input masking.
-  AuthAddShare<R> share_r;
+  AuthAddShare share_r;
+  Field r;
   PreprocInput() = default;
-  PreprocInput(int pid, const AuthAddShare<R>& share_r) 
-      : PreprocGate<R>(), pid(pid), share_r(share_r) {}
-  PreprocInput(const PreprocInput<R>& pregate) 
-      : PreprocGate<R>(), pid(pregate.pid), share_r(pregate.share_r) {}
+  PreprocInput(const AuthAddShare& share_r) 
+      : PreprocGate(), pid(0), share_r(share_r), r(Field(0)) {}
+  PreprocInput(int pid, const AuthAddShare& share_r, const Field& r) 
+      : PreprocGate(), pid(pid), share_r(share_r), r(r) {}
 };
 
-template <class R>
-struct PreprocRecGate : public PreprocGate<R> {
+
+struct PreprocMultGate : public PreprocGate {
+  // Secret shared product of inputs masks.
+  AuthAddShare triple_a; // Holds one beaver triple share of a random value a
+  AuthAddShare triple_b; // Holds one beaver triple share of a random value b
+  AuthAddShare triple_c; // Holds one beaver triple share of c=a*b
+
+  PreprocMultGate() = default;
+  PreprocMultGate(const AuthAddShare& triple_a,
+                  const AuthAddShare& triple_b,
+                  const AuthAddShare& triple_c)
+      : PreprocGate(), triple_a(triple_a),
+        triple_b(triple_b),
+        triple_c(triple_c) {}
+};
+
+
+struct PreprocRecGate : public PreprocGate {
   bool Pking = false;
   PreprocRecGate() = default;
   PreprocRecGate(bool Pking)
-    : PreprocGate<R>(), Pking(Pking) {}
+    : PreprocGate(), Pking(Pking) {}
 };
 
 // Preprocessed data for the circuit.
-template <class R>
 struct PreprocCircuit {
-  std::unordered_map<wire_t, preprocg_ptr_t<R>> gates;
+  std::unordered_map<wire_t, preprocg_ptr_t> gates;
   PreprocCircuit() = default;
 };
+
 }; 

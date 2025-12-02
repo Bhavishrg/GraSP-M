@@ -30,18 +30,11 @@ class OfflineEvaluator {
   std::shared_ptr<io::NetIOMP> network_;
   common::utils::LevelOrderedCircuit circ_;
   std::shared_ptr<common::utils::ThreadPool> tpool_;
-  PreprocCircuit<Ring> preproc_;
+  PreprocCircuit preproc_;
 
   // Used for running common coin protocol. Returns common random PRG key which
   // is then used to generate randomness for common coin output.
   //emp::block commonCoinKey();
-
-
-  // Helper function to reconstruct shares via king party or direct all-to-all
-  static void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
-                         const std::vector<Ring>& shares_list, 
-                         std::vector<Ring>& reconstructed_list,
-                         bool via_pking, int latency);
     
 
   public:
@@ -49,25 +42,25 @@ class OfflineEvaluator {
                    common::utils::LevelOrderedCircuit circ, int threads, int seed = 200, int latency = 100, bool use_pking = true);
 
   // Generate sharing of a random unknown value.
-  static void randomShare(int nP, int pid, RandGenPool& rgen, AuthAddShare<Ring>& share,
-                                         std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
+  static void randomShare(int nP, int pid, RandGenPool& rgen, AuthAddShare& share,
+                          std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec);
 
   // Generate sharing of a random value known to party. Should be called by
   // dealer when other parties call other variant.
   static void randomShareSecret(int nP, int pid, RandGenPool& rgen,
-                                AuthAddShare<Ring>& share, Ring secret,
-                                std::vector<Ring>& rand_sh_sec, size_t& idx_rand_sh_sec);
+                                AuthAddShare& share, Field secret,
+                                std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec);
 
   // Set masks for each wire. Should be called before running any of the other
   // subprotocols.
   void setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map,
-                         std::vector<Ring>& rand_sh_sec);
+                         std::vector<Field>& rand_sh_sec);
 
   void setWireMasks(const std::unordered_map<common::utils::wire_t, int>& input_pid_map);
 
-  PreprocCircuit<Ring> getPreproc();
-
+  PreprocCircuit getPreproc();
+  
   // Efficiently runs above subprotocols.
-  PreprocCircuit<Ring> run(const std::unordered_map<common::utils::wire_t, int>& input_pid_map);
+  PreprocCircuit run(const std::unordered_map<common::utils::wire_t, int>& input_pid_map);
 };
 };  // namespace graphdb
