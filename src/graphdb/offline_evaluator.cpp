@@ -33,26 +33,32 @@ void OfflineEvaluator::randomShare(int nP, int pid, RandGenPool& rgen, AuthAddSh
   Ring tag = Ring(0);
   Ring tagn = Ring(0);
   if (pid == 0) {
-    share.pushValue(Ring(0));
-    share.pushTag(Ring(0));
-/*     tpShare.pushValues(Ring(0));
     for (int i = 1; i <= nP; i++) {
       rgen.pi(i).random_data(&val, sizeof(Ring));
-      tpShare.pushValues(val);
-    }  */
+      valn += val;
+      if(i != nP) {
+        rgen.pi(i).random_data(&tag, sizeof(Ring));
+        tagn += tag;
+      }
+      else {
+        //Generate tag for party nP and store in rand_sh_sec
+        tagn = global_key*valn - tagn;
+        rand_sh_sec.push_back(tagn);
+      }
+    } 
+    
+    //Push share and tag for TP
+    share.pushValue(valn);
+    share.pushTag(global_key*valn);
   } else {
     rgen.p0().random_data(&val, sizeof(Ring));
     share.pushValue(val);
-    valn += val;
     if(pid != nP) {
       rgen.p0().random_data(&tag, sizeof(Ring));
       share.pushTag(tag);
-      tagn += tag;
     }
     else {
-      tag = global_key*valn - tagn;
-      share.pushTag(tag);
-      rand_sh_sec.push_back(tag);
+      share.pushTag(rand_sh_sec[idx_rand_sh_sec]);
       idx_rand_sh_sec++;
     }
   }
@@ -65,25 +71,38 @@ void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
   Ring valn = Ring(0);
   Ring tag = Ring(0);
   Ring tagn = Ring(0);
-                                          
-  if (pid != nP) {
-    rgen.p0().random_data(&val, sizeof(Ring));
-    valn += val;
-    share.pushValue(val);
 
-    rgen.p0().random_data(&tag, sizeof(Ring));
-    share.pushTag(tag);
-    tagn += tag;
-  } else {
+  if (pid == 0) {
+    for (int i = 1; i < nP; i++) {
+      rgen.pi(i).random_data(&val, sizeof(Ring));
+      valn += val;
+
+      rgen.pi(i).random_data(&tag, sizeof(Ring));
+      tagn += tag;
+    }
+    //Generate share and tag for party nP and store in rand_sh_sec
     valn = secret - valn;
     rand_sh_sec.push_back(valn);
-    share.pushValue(rand_sh_sec[idx_rand_sh_sec]);
-    idx_rand_sh_sec++;
+    tagn = global_key*secret - tagn;
+    rand_sh_sec.push_back(tagn);
+    
+    //Push share and tag for TP
+    share.pushValue(secret);
+    share.pushTag(global_key*secret);
+  } else {
+    if (pid != nP) {
+      rgen.p0().random_data(&val, sizeof(Ring));
+      share.pushValue(val);
 
-    tag = global_key*secret - tagn; //global_key use has to be fixed.
-    share.pushTag(tag);
-    rand_sh_sec.push_back(tag);
-    idx_rand_sh_sec++;
+      rgen.p0().random_data(&tag, sizeof(Ring));
+      share.pushTag(tag);
+    } else {
+      //Retrieve share and tag for party nP from rand_sh_sec
+      share.pushValue(rand_sh_sec[idx_rand_sh_sec]);
+      idx_rand_sh_sec++;
+      share.pushTag(rand_sh_sec[idx_rand_sh_sec]);
+      idx_rand_sh_sec++;
+    }
   }
 }
 
