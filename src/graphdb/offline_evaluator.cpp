@@ -178,6 +178,20 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+        case common::utils::GateType::kMul: {
+          AuthAddShare triple_a; // Holds shares of a random value a
+          AuthAddShare triple_b; // Holds shares of a random value b
+          AuthAddShare triple_c; // Holds shares of c=a*b
+          randomShare(nP_, id_, rgen_, triple_a, rand_sh_sec, idx_rand_sh_sec);
+          randomShare(nP_, id_, rgen_, triple_b, rand_sh_sec, idx_rand_sh_sec);
+          Field tp_prod = Field(0);
+          if (id_ == 0) { tp_prod = triple_a.valueAt() * triple_b.valueAt(); }
+          randomShareSecret(nP_, id_, rgen_, triple_c, tp_prod, rand_sh_sec, idx_rand_sh_sec);
+          preproc_.gates[gate->out] =
+              std::move(std::make_unique<PreprocMultGate>(triple_a, triple_b, triple_c));
+          break;
+        }
+
         default: {
           break;
         }
