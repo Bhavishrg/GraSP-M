@@ -84,8 +84,8 @@ void OfflineEvaluator::randomShareSecret(int nP, int pid, RandGenPool& rgen,
     Field val = Field(0);
     Field valn = secret;
 
-    Field tag = key * secret;
-    Field tagn = Field(0);
+    Field tagn = key * secret;
+    Field tag = Field(0);
 
     share.pushValue(valn);
     share.pushTag(tagn);

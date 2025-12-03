@@ -89,8 +89,8 @@ inline void initializeGlobalKey(int nP, int pid, RandGenPool& rgen, std::shared_
     std::cout << "Global key inverse initialized by party 0: " << *global_key_sh_inv << std::endl;
   } else {
     // Parties 1 to nP-1 sample their shares using p0
-    randomizeZZp(rgen.p0(), *global_key_sh_inv, sizeof(Field));
     randomizeZZp(rgen.p0(), *global_key_sh, sizeof(Field));
+    randomizeZZp(rgen.p0(), *global_key_sh_inv, sizeof(Field));
 
     std::cout << "Global key initialized by party 0: " << *global_key_sh << std::endl;
     std::cout << "Global key inverse initialized by party 0: " << *global_key_sh_inv << std::endl;
