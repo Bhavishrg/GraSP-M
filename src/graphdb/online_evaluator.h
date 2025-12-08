@@ -36,7 +36,7 @@ class OnlineEvaluator {
 
   // Helper function to reconstruct shares via king party or direct all-to-all
   static void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
-                         const std::vector<std::pair<Field, Field>>& shares_list,
+                         const std::vector<Field>& shares_list, const std::vector<Field>& tags_list,
                          std::vector<Field>& reconstructed_list, std::pair<Field, Field> check,
                          bool via_pking, int latency);
 

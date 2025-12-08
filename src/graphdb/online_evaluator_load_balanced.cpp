@@ -6,7 +6,7 @@ namespace graphdb
 {
     // Helper function to reconstruct shares via king party or direct all-to-all
     void OnlineEvaluator::reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
-                         const std::vector<std::pair<Field, Field>>& shares_list,
+                         const std::vector<Field>& shares_list, const std::vector<Field>& tags_list,
                          std::vector<Field>& reconstructed_list, std::pair<Field, Field> check,
                          bool via_pking, int latency) {
         int pKing = 1;
@@ -20,7 +20,7 @@ namespace graphdb
                 usleep(latency);
                 network->recv(pKing, reconstructed_list.data(), reconstructed_list.size() * sizeof(Field));
             } else {
-                std::vector<std::vector<std::pair<Field, Field>>> share_recv(nP);
+                std::vector<std::vector<Field>> share_recv(nP);
                 share_recv[pKing - 1] = shares_list;
                 usleep(latency);
                 
@@ -36,7 +36,7 @@ namespace graphdb
                 for (size_t i = 0; i < num_shares; ++i) {
                     Field val_sum = Field(0);
                     for (int p = 0; p < nP; ++p) {
-                        val_sum += share_recv[p][i].first;
+                        val_sum += share_recv[p][i];
                     }
                     reconstructed_list[i] = val_sum;
                 }
@@ -51,7 +51,7 @@ namespace graphdb
             }
         } else {
             // Direct reconstruction (all parties exchange shares)
-            std::vector<std::vector<std::pair<Field, Field>>> share_recv(nP);
+            std::vector<std::vector<Field>> share_recv(nP);
             share_recv[pid - 1] = shares_list;
             
             // Send to all parties (sequential for now to avoid race conditions)
@@ -75,7 +75,7 @@ namespace graphdb
             for (size_t i = 0; i < num_shares; ++i) {
                 Field val_sum = Field(0);
                 for (int p = 0; p < nP; ++p) {
-                    val_sum += share_recv[p][i].first;
+                    val_sum += share_recv[p][i];
                 }
                 reconstructed_list[i] = val_sum;
             }
@@ -281,6 +281,87 @@ namespace graphdb
             reconstructed_share.pushValue(reconstructed[i]);
             reconstructed_share.pushTag(Field(0));
             wires_[rec_gates[i].out] = reconstructed_share;
+        }
+    }
+
+    void OnlineEvaluator::multEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates) {
+        if (id_ == 0) { return; }
+        
+        size_t num_mult_gates = mult_gates.size();
+        if (num_mult_gates == 0) { return; }
+        
+        // Step 1: Compute shares of u and v and corresponding tags for each multiplication gate
+        // For multiplication z = x * y using Beaver triples (a, b, c) where c = a * b:
+        // - u = x - a (each party computes their share)
+        // - v = y - b (each party computes their share)
+        // - Reconstruct u and v to get actual values
+        // - Compute z = u*v + u*b + v*a + c
+        
+        //Vector of shares of u and v
+        std::vector<Field> u_shares(num_mult_gates);
+        std::vector<Field> v_shares(num_mult_gates);
+
+        //Vector of tags of u and v
+        std::vector<Field> u_tags(num_mult_gates);
+        std::vector<Field> v_tags(num_mult_gates);
+        
+        #pragma omp parallel for
+        for (size_t i = 0; i < num_mult_gates; ++i) {
+            auto &mult_gate = mult_gates[i];
+            auto *pre_out = static_cast<PreprocMultGate*>(preproc_.gates[mult_gate.out].get());
+            
+            // Compute this party's share of u and v
+            u_shares[i] = wires_[mult_gate.in1].valueAt() - pre_out->triple_a.valueAt();
+            v_shares[i] = wires_[mult_gate.in2].valueAt() - pre_out->triple_b.valueAt();
+
+            // Compute this party's share of tags of u and v
+            u_tags[i] = wires_[mult_gate.in1].tagAt() - pre_out->triple_a.tagAt();
+            v_tags[i] = wires_[mult_gate.in2].tagAt() - pre_out->triple_b.tagAt();
+        }
+        
+        // Step 2: Reconstruct u and v values
+        std::vector<Field> u_reconstructed(num_mult_gates);
+        std::vector<Field> v_reconstructed(num_mult_gates);
+        
+        // Prepare shares and tags to send (interleaved: u0, v0, u1, v1, ...)
+        std::vector<Field> shares_to_send(2 * num_mult_gates);
+        std::vector<Field> tags_to_send(2 * num_mult_gates);
+        for (size_t i = 0; i < num_mult_gates; ++i) {
+            shares_to_send[2*i] = u_shares[i];
+            tags_to_send[2*i] = u_tags[i];
+            shares_to_send[2*i + 1] = v_shares[i];
+            tags_to_send[2*i + 1] = v_tags[i];
+        }
+        
+        std::vector<Field> reconstructed(2 * num_mult_gates);
+        reconstruct(nP_, id_, network_, shares_to_send, tags_to_send, reconstructed, use_pking_, latency_);
+        
+        // Unpack reconstructed values
+        for (size_t i = 0; i < num_mult_gates; ++i) {
+            u_reconstructed[i] = reconstructed[2*i];
+            v_reconstructed[i] = reconstructed[2*i + 1];
+        }
+        
+        // Step 3: Compute multiplication result using Beaver triple formula
+        // z = u*v + u*b + v*a + c (where only c is a share, rest are public values)
+        #pragma omp parallel for
+        for (size_t i = 0; i < num_mult_gates; ++i) {
+            auto &mult_gate = mult_gates[i];
+            auto *pre_out = static_cast<PreprocMultGate*>(preproc_.gates[mult_gate.out].get());
+            
+            Field u = u_reconstructed[i];
+            Field v = v_reconstructed[i];
+            Field a = pre_out->triple_a.valueAt();
+            Field b = pre_out->triple_b.valueAt();
+            Field c = pre_out->triple_c.valueAt();
+            
+            // Beaver triple formula: z = u*v + u*b + v*a + c
+            if (id_ == 1){
+                wires_[mult_gate.out].pushValue(u * v + u * b + v * a + c);
+            }
+            else{
+                wires_[mult_gate.out].pushValue(u * b + v * a + c);
+            }
         }
     }
 
