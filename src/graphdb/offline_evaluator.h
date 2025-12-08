@@ -51,6 +51,16 @@ class OfflineEvaluator {
                                 AuthAddShare& share, Field secret,
                                 std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec);
 
+  // Generate permuted mask for PermAndSh gate
+  static void generatePermAndShPermutedMask(int nP, int pid, RandGenPool& rgen,
+                                           std::vector<AuthAddShare>& mask_R,
+                                           std::vector<AuthAddShare>& permuted_mask,
+                                           std::vector<AuthAddShare>& mask_R_tag,
+                                           std::vector<AuthAddShare>& permuted_mask_tag,
+                                           std::vector<int>& owner_pi,
+                                           size_t vec_size, int owner,
+                                           std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec);
+
   // Set masks for each wire. Should be called before running any of the other
   // subprotocols.
   void setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map,

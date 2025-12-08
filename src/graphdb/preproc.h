@@ -54,6 +54,53 @@ struct PreprocRecGate : public PreprocGate {
     : PreprocGate(), Pking(Pking) {}
 };
 
+struct PreprocEqzGate : public PreprocGate {
+  AuthAddShare share_r1;
+  AuthAddShare share_r2;
+  std::vector<AuthAddShare> share_r1_bits;
+  std::vector<AuthAddShare> share_r2_bits;
+  PreprocEqzGate() = default;
+  PreprocEqzGate(const AuthAddShare& share_r1,
+                 const AuthAddShare& share_r2,
+                 const std::vector<AuthAddShare>& share_r1_bits,
+                 const std::vector<AuthAddShare>& share_r2_bits)
+      : PreprocGate(), share_r1(share_r1), share_r2(share_r2),
+        share_r1_bits(share_r1_bits), share_r2_bits(share_r2_bits) {}
+};
+
+
+struct PreprocPermAndShGate : public PreprocGate {
+  // Mask R and its shares
+  std::vector<AuthAddShare> mask_R;      // This party's additive shares of R
+  std::vector<AuthAddShare> mask_R_tag;      // This party's additive shares of R for tag
+
+
+  // Permuted mask π_owner(R) (only one permutation per gate - the owner's)
+  std::vector<AuthAddShare> permuted_mask;      // This party's additive shares of π_owner(R)
+  std::vector<AuthAddShare> permuted_mask_tag;      // This party's additive shares of π_owner(R_tag)
+
+  size_t vec_size; // Size of input vector
+  int owner;       // Owner party id for this permute-and-share gate
+
+  PreprocPermAndShGate() = default;
+  PreprocPermAndShGate(const std::vector<AuthAddShare>& mask_R,
+                       const std::vector<AuthAddShare>& permuted_mask,
+                       const std::vector<AuthAddShare>& mask_R_tag,
+                       const std::vector<AuthAddShare>& permuted_mask_tag,
+                       size_t vec_size, int owner)
+      : PreprocGate(), mask_R(mask_R), permuted_mask(permuted_mask),  mask_R_tag(mask_R_tag), permuted_mask_tag(permuted_mask_tag), vec_size(vec_size), owner(owner) {}
+};
+
+
+struct PreprocRewireGate : public PreprocGate {
+  size_t vec_size;       // Size of position map and each payload vector
+  size_t num_payloads;   // Number of payload vectors
+  
+  PreprocRewireGate() = default;
+  PreprocRewireGate(size_t vec_size, size_t num_payloads)
+      : PreprocGate(), vec_size(vec_size), num_payloads(num_payloads) {}
+};
+
 // Preprocessed data for the circuit.
 struct PreprocCircuit {
   std::unordered_map<wire_t, preprocg_ptr_t> gates;

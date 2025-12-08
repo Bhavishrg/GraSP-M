@@ -74,26 +74,19 @@ inline void initializeGlobalKey(int nP, int pid, RandGenPool& rgen, std::shared_
     network->send(nP, &last_party_inv_share, sizeof(Field));
     network->flush(nP);
 
-    std::cout << "Global key initialized by party 0: " << *global_key_sh << std::endl;
-    std::cout << "Global key inverse initialized by party 0: " << *global_key_sh_inv << std::endl;
-
   } else if (pid == nP) {
     // Sample global_key_sh using p0
     randomizeZZp(rgen.p0(), *global_key_sh, sizeof(Field));
+    
 
     // Last party receives its inverse share from helper
     // Small sync to make sure send is ready
     network->recv(0, global_key_sh_inv, sizeof(Field));
-
-    std::cout << "Global key initialized by party 0: " << *global_key_sh << std::endl;
-    std::cout << "Global key inverse initialized by party 0: " << *global_key_sh_inv << std::endl;
+  
   } else {
     // Parties 1 to nP-1 sample their shares using p0
     randomizeZZp(rgen.p0(), *global_key_sh, sizeof(Field));
     randomizeZZp(rgen.p0(), *global_key_sh_inv, sizeof(Field));
-
-    std::cout << "Global key initialized by party 0: " << *global_key_sh << std::endl;
-    std::cout << "Global key inverse initialized by party 0: " << *global_key_sh_inv << std::endl;
   }
 
   // Final sync to ensure all parties completed init
@@ -131,6 +124,9 @@ class AuthAddShare {
   Field& tagAt() { return tag_; }
   Field keySh() const { 
     return *global_key_sh;
+  }
+  Field invkeySh() const { 
+    return *global_key_sh_inv;
   }
 
   void pushValue(Field val) { value_ = val; } 

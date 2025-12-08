@@ -29,16 +29,18 @@ class OnlineEvaluator {
   std::shared_ptr<common::utils::ThreadPool> tpool_;
 
   // Helper function to reconstruct shares towards a designated party
-  static void reconstructToParty(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
+  void reconstructToParty(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
                                 const std::vector<AuthAddShare>& shares_list,
                                 std::vector<Field>& reconstructed_list,
                                 int target_party, int latency);
 
   // Helper function to reconstruct shares via king party or direct all-to-all
-  static void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
-                         const std::vector<Field>& shares_list, const std::vector<Field>& tags_list,
-                         std::vector<Field>& reconstructed_list, std::pair<Field, Field> check,
-                         bool via_pking, int latency);
+  void reconstruct(int nP, int pid, std::shared_ptr<io::NetIOMP> network,
+                         std::vector<AuthAddShare>& shares_list,
+                         std::vector<Field>& reconstructed_list, AuthAddShare& check,
+                         bool via_pking, int latency,
+                         std::vector<AuthAddShare>* tag_shares_list = nullptr,
+                         std::vector<Field>* tag_reconstructed_list = nullptr);
 
   public:
   
@@ -55,16 +57,16 @@ class OnlineEvaluator {
   void setInputs(const std::unordered_map<common::utils::wire_t, Field> &inputs);
 
   void setRandomInputs();
-
-  // void evaluateGatesAtDepthPartySend(size_t depth, std::vector<Ring> &mult_vals);
-
-  // void evaluateGatesAtDepthPartyRecv(size_t depth, std::vector<Ring> &mult_vals);
     
-  void RecEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates);
+  void multEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates);
+
+  void eqzEvaluate(const std::vector<common::utils::FIn1Gate> &eqz_gates);
 
   void recEvaluate(const std::vector<common::utils::FIn1Gate> &rec_gates);
 
-  void multEvaluate(const std::vector<common::utils::FIn2Gate> &mult_gates);
+  void permAndShEvaluate(const std::vector<common::utils::SIMDOGate> &permAndSh_gates);
+  
+  void rewireEvaluate(const std::vector<common::utils::SIMDOGate> &rewire_gates);
 
   void evaluateGatesAtDepth(size_t depth);
 
@@ -72,6 +74,9 @@ class OnlineEvaluator {
 
   // Evaluate online phase for circuit
   std::vector<Field> evaluateCircuit(const std::unordered_map<common::utils::wire_t, Field> &inputs);
+
+  // Verify the check value for authentication
+  void verify(AuthAddShare check_val);
   };
 
 }; // namespace graphdb

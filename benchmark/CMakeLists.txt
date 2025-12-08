@@ -12,6 +12,7 @@ endmacro()
 # Example: add_benchmark(permAndSh)
 
 add_benchmark(add)
+add_benchmark(permsh)
 
 add_custom_target(benchmarks)
 if(benchbin)
