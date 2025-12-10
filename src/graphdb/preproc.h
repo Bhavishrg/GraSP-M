@@ -92,6 +92,30 @@ struct PreprocPermAndShGate : public PreprocGate {
 };
 
 
+struct PreprocAmortzdPnSGate : public PreprocGate {
+  // Shares of random mask R (size = vec_size)
+  std::vector<AuthAddShare> mask_R;      // This party's additive shares of R
+  std::vector<AuthAddShare> mask_R_tag;      // This party's additive shares of R
+  
+  // Shares of permuted masks π_i(R) for each party i (size = nP x vec_size)
+  // permuted_masks[i] contains shares of π_i(R)
+  std::vector<std::vector<AuthAddShare>> permuted_masks;      // This party's additive shares of π_i(R)
+  std::vector<std::vector<AuthAddShare>> permuted_masks_tag;      // This party's additive shares of π_i(R)
+  
+  size_t vec_size;  // Size of input vector
+  size_t nP;        // Number of parties
+  
+  PreprocAmortzdPnSGate() = default;
+  PreprocAmortzdPnSGate(const std::vector<AuthAddShare>& mask_R,
+                        const std::vector<std::vector<AuthAddShare>>& permuted_masks,
+                        const std::vector<AuthAddShare>& mask_R_tag,
+                        const std::vector<std::vector<AuthAddShare>>& permuted_masks_tag,
+                        size_t vec_size, size_t nP)
+      : PreprocGate(), mask_R(mask_R), permuted_masks(permuted_masks), 
+        mask_R_tag(mask_R_tag), permuted_masks_tag(permuted_masks_tag),
+        vec_size(vec_size), nP(nP) {}
+};
+
 struct PreprocRewireGate : public PreprocGate {
   size_t vec_size;       // Size of position map and each payload vector
   size_t num_payloads;   // Number of payload vectors

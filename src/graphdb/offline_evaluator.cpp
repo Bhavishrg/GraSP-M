@@ -152,6 +152,48 @@ void OfflineEvaluator::generatePermAndShPermutedMask(int nP, int pid, RandGenPoo
   }
 }
 
+// Generate shares of permuted masks π_i(R) for all parties i=1 to nP
+// HP: Reconstructs R, computes π_i(R) for each party, then uses randomShareSecret to share each π_i(R)
+// Computing parties: Receive their shares via randomShareSecret
+void OfflineEvaluator::generateAmortzdPnSPermutedMasks(int nP, int pid, RandGenPool& rgen,
+                                                        std::vector<AuthAddShare> mask_R,
+                                                        std::vector<std::vector<AuthAddShare>> permuted_masks,
+                                                        std::vector<AuthAddShare> mask_R_tag,
+                                                        std::vector<std::vector<AuthAddShare>> permuted_masks_tag,
+                                                        std::vector<std::vector<int>>& all_permutations,
+                                                        size_t vec_size,
+                                                        std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec) {
+  if (pid == 0) {
+    // Compute π_i(R) for i = 0 to nP-1
+    for (size_t party = 0; party < nP; party++) {
+      std::vector<int>& pi_i = all_permutations[party];
+      std::vector<Field> permuted_R(vec_size);
+      std::vector<Field> permuted_R_tag(vec_size);
+
+      // Compute π_i(R)
+      for (size_t j = 0; j < vec_size; j++) {
+        int idx_perm = pi_i[j];
+        permuted_R[idx_perm] = mask_R[j].valueAt();
+        permuted_R_tag[idx_perm] = mask_R_tag[j].valueAt();
+      }
+
+      // Share π_i(R) using randomShareSecret
+      for (size_t j = 0; j < vec_size; j++) {
+        randomShareSecret(nP, pid, rgen, permuted_masks[party][j], permuted_R[j], rand_sh_sec, idx_rand_sh_sec);
+        randomShareSecret(nP, pid, rgen, permuted_masks_tag[party][j], permuted_R_tag[j], rand_sh_sec, idx_rand_sh_sec);
+      }
+    }
+  } else {
+    // Computing parties: Receive shares via randomShareSecret
+    for (size_t party = 0; party < nP; party++) {
+      for (size_t j = 0; j < vec_size; j++) {
+        randomShareSecret(nP, pid, rgen, permuted_masks[party][j], Field(0), rand_sh_sec, idx_rand_sh_sec);
+        randomShareSecret(nP, pid, rgen, permuted_masks_tag[party][j], Field(0), rand_sh_sec, idx_rand_sh_sec);
+      }
+    }
+  }
+}
+
 
 void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map, 
                                          std::vector<Field>& rand_sh_sec)  {
@@ -161,14 +203,6 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
   for (const auto& level : circ_.gates_by_level) {
     for (const auto& gate : level) {
       switch (gate->type) {
-        // case common::utils::GateType::kInp: {
-        //   AuthAddShare<Ring> share_r;
-        //   randomShare(nP_, id_, rgen_, share_r, rand_sh_sec, idx_rand_sh_sec);
-        //   auto pid = input_pid_map.at(gate->out);
-        //   auto pregate = std::make_unique<PreprocInput<Ring>>(pid, share_r);
-        //   preproc_.gates[gate->out] = std::move(pregate);
-        //   break;
-        // }
 
         case common::utils::GateType::kInp: {
             auto pid = input_pid_map.at(gate->out);
@@ -297,6 +331,36 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
 
           preproc_.gates[gate->out] =
               std::move(std::make_unique<PreprocPermAndShGate>(mask_R, permuted_mask, mask_R_tag, permuted_mask_tag, vec_size, gate->owner));
+          break;
+        }
+
+
+        case common::utils::GateType::kAmortzdPnS: {
+          auto *amortzdPnS_g = static_cast<common::utils::SIMDOGate *>(gate.get());
+          auto vec_size = amortzdPnS_g->vec_size;  // Use metadata stored in gate
+          
+          // Generate random mask R and its shares
+          std::vector<AuthAddShare> mask_R(vec_size);
+          std::vector<AuthAddShare> mask_R_tag(vec_size);
+
+          for (size_t i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, mask_R[i], rand_sh_sec, idx_rand_sh_sec);
+            randomShare(nP_, id_, rgen_, mask_R_tag[i], rand_sh_sec, idx_rand_sh_sec);
+          }
+          
+          // Generate shares of permuted masks π_i(R) for each party i
+          std::vector<std::vector<AuthAddShare>> permuted_masks(nP_, std::vector<AuthAddShare>(vec_size));
+          std::vector<std::vector<AuthAddShare>> permuted_masks_tag(nP_, std::vector<AuthAddShare>(vec_size));
+          
+          // HP computes π_i(R) for each party i and shares them using randomShareSecret
+          generateAmortzdPnSPermutedMasks(nP_, id_, rgen_, mask_R, permuted_masks,
+                                          mask_R_tag, permuted_masks_tag,
+                                          amortzdPnS_g->permutation, vec_size,
+                                          rand_sh_sec, idx_rand_sh_sec);
+          
+          preproc_.gates[gate->outs[0]] = std::move(std::make_unique<PreprocAmortzdPnSGate>(mask_R, permuted_masks, 
+                                                                mask_R_tag, permuted_masks_tag, 
+                                                                vec_size, nP_));
           break;
         }
 

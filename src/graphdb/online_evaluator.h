@@ -66,6 +66,8 @@ class OnlineEvaluator {
 
   void permAndShEvaluate(const std::vector<common::utils::SIMDOGate> &permAndSh_gates);
   
+  void amortzdPnSEvaluate(const std::vector<common::utils::SIMDOGate> &amortzdPnS_gates);
+  
   void rewireEvaluate(const std::vector<common::utils::SIMDOGate> &rewire_gates);
 
   void evaluateGatesAtDepth(size_t depth);

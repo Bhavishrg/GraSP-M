@@ -61,6 +61,16 @@ class OfflineEvaluator {
                                            size_t vec_size, int owner,
                                            std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec);
 
+  
+  static void generateAmortzdPnSPermutedMasks(int nP, int pid, RandGenPool& rgen,
+                                              std::vector<AuthAddShare> mask_R,
+                                              std::vector<std::vector<AuthAddShare>> permuted_masks,
+                                              std::vector<AuthAddShare> mask_R_tag,
+                                              std::vector<std::vector<AuthAddShare>> permuted_masks_tag,
+                                              std::vector<std::vector<int>>& all_permutations,
+                                              size_t vec_size,
+                                              std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec);
+  
   // Set masks for each wire. Should be called before running any of the other
   // subprotocols.
   void setWireMasksParty(const std::unordered_map<common::utils::wire_t, int>& input_pid_map,

@@ -222,27 +222,6 @@ namespace graphdb
 
     
     void OnlineEvaluator::setInputs(const std::unordered_map<common::utils::wire_t, Field> &inputs) {
-        // Input gates have depth 0
-        // for (auto &g : circ_.gates_by_level[0]) {
-        //     if (g->type == common::utils::GateType::kInp) {
-        //         auto *pre_input = static_cast<PreprocInput<Ring> *>(preproc_.gates[g->out].get());
-        //         auto pid = pre_input->pid;
-        //         if (id_ != 0) {
-        //             if (pid == id_) {
-        //                 Ring accumulated_val = Ring(0);
-        //                 for (size_t i = 1; i <= nP_; i++) {
-        //                     if (i != pid) {
-        //                         Ring rand_sh;
-        //                         network_->send(pid, output_shares[id_ - 1].data(), output_shares[id_ - 1].size() * sizeof(Ring));
-        //                     }
-        //                 }
-        //                 wires_[g->out] = inputs.at(g->out) - accumulated_val;
-        //             } else {
-        //                 rgen_.pi(id_).random_data(&wires_[g->out], sizeof(Ring));
-        //             }
-        //         }
-        //     }
-        // }
 
         if (id_ == 0) { return; }
 
@@ -314,9 +293,6 @@ namespace graphdb
     void OnlineEvaluator::setRandomInputs() {
         // Input gates have depth 0.
         for (auto &g : circ_.gates_by_level[0]) {
-            // if (g->type == common::utils::GateType::kInp) {
-            //     rgen_.pi(id_).random_data(&wires_[g->out], sizeof(Ring));
-            // }
 
             if (g->type == common::utils::GateType::kInp) {
                 auto *pre_input = static_cast<PreprocInput *>(preproc_.gates[g->out].get());
@@ -688,6 +664,67 @@ namespace graphdb
         }
     }
 
+    void OnlineEvaluator::amortzdPnSEvaluate(const std::vector<common::utils::SIMDOGate> &amortzdPnS_gates) {
+        if (id_ == 0 || amortzdPnS_gates.empty()) { return; }
+
+        // Batch mask-and-reconstruct across all amortzdPnS gates.
+        std::vector<AuthAddShare> all_masked_shares;
+        std::vector<AuthAddShare> all_masked_shares_tags;
+        std::vector<size_t> vec_sizes;
+        std::vector<const common::utils::SIMDOGate*> gates_order;
+
+        for (const auto &gate : amortzdPnS_gates) {
+            auto *preproc = static_cast<PreprocAmortzdPnSGate *>(preproc_.gates[gate.outs[0]].get());
+            size_t vec_size = preproc->vec_size;
+            vec_sizes.push_back(vec_size);
+            gates_order.push_back(&gate);
+            for (size_t i = 0; i < vec_size; ++i) {
+                all_masked_shares.push_back(wires_[gate.in[i]]); // + preproc->mask_R[i]);
+                all_masked_shares_tags.push_back(wires_[gate.in[i]]); // + preproc->mask_R_tag[i]);
+            }
+        }
+
+        if (all_masked_shares.empty()) { return; }
+
+        std::vector<Field> all_reconstructed;
+        std::vector<Field> all_reconstructed_tags;
+        
+        reconstruct(nP_, id_, network_, all_masked_shares, all_reconstructed, check, use_pking_, latency_, &all_masked_shares_tags, &all_reconstructed_tags);
+
+
+        // Now split and compute outputs per gate. For each amortzdPnS gate, we need to produce nP * vec_size outputs (flattened).
+        size_t offset = 0;
+        for (size_t gidx = 0; gidx < amortzdPnS_gates.size(); ++gidx) {
+            const auto *gate = gates_order[gidx];
+            auto *preproc = static_cast<PreprocAmortzdPnSGate *>(preproc_.gates[gate->outs[0]].get());
+            size_t vec_size = vec_sizes[gidx];
+            size_t nP = preproc->nP;
+
+            // T' for this gate is all_Tprime[offset ... offset+vec_size-1]
+            // Fill outputs in flattened order: for party 0..nP-1, each has vec_size outputs
+            size_t out_idx = 0;
+            for (size_t party_idx = 0; party_idx < nP; party_idx++) {
+                if (party_idx + 1 == id_) {
+                    const std::vector<int>& my_permutation = gate->permutation[party_idx];
+                    for (size_t j = 0; j < vec_size; ++j) {
+                        int idx_perm = my_permutation[j];
+                        wires_[gate->outs[out_idx]].pushValue(all_reconstructed[offset + idx_perm] - preproc->permuted_masks[party_idx][j].valueAt());
+                        wires_[gate->outs[out_idx]].pushTag(all_reconstructed_tags[offset + idx_perm] - preproc->permuted_masks_tag[party_idx][j].tagAt());
+                        out_idx++;
+                    }
+                } else {
+                    for (size_t j = 0; j < vec_size; ++j) {
+                        wires_[gate->outs[out_idx]].pushValue(Field(0) - preproc->permuted_masks[party_idx][j].valueAt());
+                        wires_[gate->outs[out_idx]].pushTag(Field(0) - preproc->permuted_masks_tag[party_idx][j].tagAt());
+                        out_idx++;
+                    }
+                }
+            }
+
+            offset += vec_size;
+        }
+    }
+
     void OnlineEvaluator::evaluateGatesAtDepth(size_t depth) {
         if (id_ == 0) { return; }
 
@@ -696,7 +733,7 @@ namespace graphdb
         std::vector<common::utils::FIn1Gate> rec_gates;
         // std::vector<common::utils::SIMDOGate> shuffle_gates;
         std::vector<common::utils::SIMDOGate> permAndSh_gates;
-        // std::vector<common::utils::SIMDOGate> amortzdPnS_gates;
+        std::vector<common::utils::SIMDOGate> amortzdPnS_gates;
         std::vector<common::utils::SIMDOGate> rewire_gates;
 
         // First pass: collect the multi-round gates so their batched handlers can run once.
@@ -729,11 +766,11 @@ namespace graphdb
                     break;
                 }
 
-                // case common::utils::GateType::kAmortzdPnS: {
-                //     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
-                //     amortzdPnS_gates.push_back(*g);
-                //     break;
-                // }
+                case common::utils::GateType::kAmortzdPnS: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    amortzdPnS_gates.push_back(*g);
+                    break;
+                }
 
                 case common::utils::GateType::kRewire: {
                     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
@@ -752,7 +789,7 @@ namespace graphdb
         if (!rec_gates.empty()) { recEvaluate(rec_gates); }
         // if (!shuffle_gates.empty()) {  }
         if (!permAndSh_gates.empty()) { permAndShEvaluate(permAndSh_gates); }
-        // if (!amortzdPnS_gates.empty()) {  }
+        if (!amortzdPnS_gates.empty()) { amortzdPnSEvaluate(amortzdPnS_gates); }
         if (!rewire_gates.empty()) { rewireEvaluate(rewire_gates); }
         
         // Second pass: handle locally evaluable gates.
