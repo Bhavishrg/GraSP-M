@@ -30,9 +30,11 @@ enum GateType {
   kConstMul,
   kShuffle,
   kPermAndSh,
+  kCPermAndSh,
   kPublicPerm,
   kRewire,
   kAmortzdPnS,
+  kCAmortzdPnS,
   kInvalid,
   NumGates
 };
@@ -280,6 +282,65 @@ class Circuit {
     return output;
   }
 
+  // Function to add a committed permute-and-share gate with two input vectors.
+  // One vector is added to the input wire, the other is subtracted from the output.
+  std::vector<wire_t> addCPermAndShGate(const std::vector<wire_t>& input, 
+                                        const std::vector<wire_t>& commitment,
+                                        const std::vector<wire_t>& permuted_commitment,
+                                        const std::vector<std::vector<int>> &permutation,
+                                        int owner = 0) {
+    // Validate input wires
+    for (size_t i = 0; i < input.size(); i++) {
+      if (!isWireValid(input[i])) {
+        throw std::invalid_argument("Invalid input wire ID.");
+      }
+    }
+
+    // Validate commitment wires
+    for (size_t i = 0; i < commitment.size(); i++) {
+      if (!isWireValid(commitment[i])) {
+        throw std::invalid_argument("Invalid commitment wire ID.");
+      }
+    }
+
+    // Validate permuted_commitment wires
+    for (size_t i = 0; i < permuted_commitment.size(); i++) {
+      if (!isWireValid(permuted_commitment[i])) {
+        throw std::invalid_argument("Invalid permuted_commitment wire ID.");
+      }
+    }
+
+    // Check size consistency
+    if (input.size() != commitment.size() || input.size() != permuted_commitment.size()) {
+      throw std::invalid_argument("All input vectors must have the same size.");
+    }
+
+    if (permutation.size() == 0) {
+      throw std::invalid_argument("No permutation passed.");
+    }
+
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (input.size() != permutation[i].size()) {
+        throw std::invalid_argument("Permutation size mismatch.");
+      }
+    }
+
+    // Create combined input: [input..., commitment..., permuted_commitment...]
+    std::vector<wire_t> combined_input;
+    combined_input.reserve(input.size() * 3);
+    combined_input.insert(combined_input.end(), input.begin(), input.end());
+    combined_input.insert(combined_input.end(), commitment.begin(), commitment.end());
+    combined_input.insert(combined_input.end(), permuted_commitment.begin(), permuted_commitment.end());
+
+    std::vector<wire_t> output(input.size());
+    for (int i = 0; i < input.size(); i++) {
+      output[i] = i + num_wires;
+    }
+    gates_.push_back(std::make_shared<SIMDOGate>(GateType::kCPermAndSh, owner, combined_input, output, permutation, input.size()));
+    num_wires += input.size();
+    return output;
+  }
+
   std::vector<wire_t> addConstOpMGate(GateType type, const std::vector<wire_t>& input, const std::vector<int> &permutation) {
     if (type != GateType::kPublicPerm) {
       throw std::invalid_argument("Invalid gate type.");
@@ -428,6 +489,90 @@ class Circuit {
     return output;
   }
 
+  // Function to add a committed amortized permute-and-share gate.
+  // Takes nP+1 commitment vectors: commitment added to input, and nP permuted_commitments subtracted from outputs.
+  std::vector<std::vector<wire_t>> addCAmortzdPnSGate(
+      const std::vector<wire_t>& input,
+      const std::vector<wire_t>& commitment,
+      const std::vector<std::vector<wire_t>>& permuted_commitments,
+      const std::vector<std::vector<int>>& permutation) {
+    
+    int nP = permutation.size();
+    size_t vec_size = input.size();
+    
+    // Validate input wires
+    for (size_t i = 0; i < vec_size; i++) {
+      if (!isWireValid(input[i])) {
+        throw std::invalid_argument("Invalid input wire ID.");
+      }
+    }
+
+    // Validate commitment wires
+    if (commitment.size() != vec_size) {
+      throw std::invalid_argument("Commitment vector size must match input size.");
+    }
+    for (size_t i = 0; i < vec_size; i++) {
+      if (!isWireValid(commitment[i])) {
+        throw std::invalid_argument("Invalid commitment wire ID.");
+      }
+    }
+
+    // Validate permuted_commitments
+    if (permuted_commitments.size() != static_cast<size_t>(nP)) {
+      throw std::invalid_argument("Must have nP permuted_commitment vectors.");
+    }
+    for (int pid = 0; pid < nP; ++pid) {
+      if (permuted_commitments[pid].size() != vec_size) {
+        throw std::invalid_argument("All permuted_commitment vectors must match input size.");
+      }
+      for (size_t i = 0; i < vec_size; i++) {
+        if (!isWireValid(permuted_commitments[pid][i])) {
+          throw std::invalid_argument("Invalid permuted_commitment wire ID.");
+        }
+      }
+    }
+
+    // Validate permutations
+    if (permutation.size() == 0) {
+      throw std::invalid_argument("No permutation passed.");
+    }
+    for (size_t i = 0; i < permutation.size(); ++i) {
+      if (vec_size != permutation[i].size()) {
+        throw std::invalid_argument("Permutation size mismatch.");
+      }
+    }
+
+    // Create combined input: [input..., commitment..., perm_comm0..., perm_comm1..., ..., perm_commN-1...]
+    std::vector<wire_t> combined_input;
+    combined_input.reserve(vec_size * (2 + nP));
+    combined_input.insert(combined_input.end(), input.begin(), input.end());
+    combined_input.insert(combined_input.end(), commitment.begin(), commitment.end());
+    for (int pid = 0; pid < nP; ++pid) {
+      combined_input.insert(combined_input.end(), permuted_commitments[pid].begin(), permuted_commitments[pid].end());
+    }
+
+    // Create flattened output: [party0_wire0, ..., party0_wireN, party1_wire0, ..., partyNP_wireN]
+    std::vector<wire_t> flat_output(nP * vec_size);
+    for (int pid = 0; pid < nP; ++pid) {
+      for (size_t i = 0; i < vec_size; i++) {
+        flat_output[pid * vec_size + i] = num_wires + pid * vec_size + i;
+      }
+    }
+    
+    // Store vec_size as metadata
+    gates_.push_back(std::make_shared<SIMDOGate>(GateType::kCAmortzdPnS, 0, combined_input, flat_output, permutation, vec_size));
+    num_wires += nP * vec_size;
+    
+    // Return 2D structure for convenience
+    std::vector<std::vector<wire_t>> output(nP, std::vector<wire_t>(vec_size));
+    for (int pid = 0; pid < nP; ++pid) {
+      for (size_t i = 0; i < vec_size; i++) {
+        output[pid][i] = flat_output[pid * vec_size + i];
+      }
+    }
+    return output;
+  }
+
 
   
   // Level ordered gates are helpful for evaluation.
@@ -483,7 +628,8 @@ class Circuit {
         }
 
         case GateType::kShuffle:
-        case GateType::kPermAndSh: {
+        case GateType::kPermAndSh:
+        case GateType::kCPermAndSh: {
           const auto* g = static_cast<SIMDOGate*>(gate.get());
           size_t gate_depth = 0;
           for (size_t i = 0; i < g->in.size(); i++) {
@@ -509,7 +655,8 @@ class Circuit {
           break;
         }
 
-        case GateType::kAmortzdPnS: {
+        case GateType::kAmortzdPnS:
+        case GateType::kCAmortzdPnS: {
           const auto* g = static_cast<SIMDOGate*>(gate.get());
           size_t gate_depth = 0;
           for (size_t i = 0; i < g->in.size(); i++) {
@@ -545,7 +692,7 @@ class Circuit {
     std::vector<std::vector<gate_ptr_t>> gates_by_level(depth + 1);
     for (const auto& gate : gates_) {
       res.count[gate->type]++;
-      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kRewire || gate->type == GateType::kAmortzdPnS) {
+      if (gate->type == GateType::kShuffle || gate->type == GateType::kPermAndSh || gate->type == GateType::kCPermAndSh || gate->type == GateType::kPublicPerm || gate->type == GateType::kRewire || gate->type == GateType::kAmortzdPnS || gate->type == GateType::kCAmortzdPnS) {
         gates_by_level[gate_level[gate->outs[0]]].push_back(gate);
       } else {
         gates_by_level[gate_level[gate->out]].push_back(gate);

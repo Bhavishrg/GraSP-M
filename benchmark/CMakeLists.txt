@@ -13,7 +13,9 @@ endmacro()
 
 add_benchmark(add)
 add_benchmark(permsh)
+add_benchmark(cpermsh)
 add_benchmark(amortzdpns)
+add_benchmark(camortzdpns)
 
 add_custom_target(benchmarks)
 if(benchbin)

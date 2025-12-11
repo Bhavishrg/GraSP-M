@@ -664,6 +664,102 @@ namespace graphdb
         }
     }
 
+    void OnlineEvaluator::cPermAndShEvaluate(const std::vector<common::utils::SIMDOGate> &cPermAndSh_gates) {
+        if (id_ == 0 || cPermAndSh_gates.empty()) { return; }
+
+        // Group gates by owner and batch masked shares for reconstruction
+        std::vector<std::vector<AuthAddShare>> masked_shares_by_owner(nP_ + 1);
+        std::vector<std::vector<AuthAddShare>> masked_tags_by_owner(nP_ + 1);
+        std::vector<std::vector<size_t>> gate_indices_by_owner(nP_ + 1);
+        std::vector<std::vector<size_t>> gate_offsets_by_owner(nP_ + 1);
+        std::vector<size_t> gate_vec_sizes;
+        
+        gate_vec_sizes.reserve(cPermAndSh_gates.size());
+        
+        // Collect masked shares grouped by owner
+        for (size_t gidx = 0; gidx < cPermAndSh_gates.size(); ++gidx) {
+            const auto &gate = cPermAndSh_gates[gidx];
+            auto *preproc = static_cast<PreprocCPermAndShGate*>(preproc_.gates[gate.out].get());
+            size_t vec_size = preproc->vec_size;
+            int owner = preproc->owner;
+            
+            gate_vec_sizes.push_back(vec_size);
+            gate_indices_by_owner[owner].push_back(gidx);
+            gate_offsets_by_owner[owner].push_back(masked_shares_by_owner[owner].size());
+            
+            // Input structure: [input..., add_to_input..., sub_from_output...]
+            // Compute masked shares: (T + add_to_input) + R
+            for (size_t i = 0; i < vec_size; ++i) {
+                AuthAddShare masked_wire;
+                masked_shares_by_owner[owner].push_back(wires_[gate.in[i]] + wires_[gate.in[vec_size + i]] + preproc->mask_R[i]);
+                masked_tags_by_owner[owner].push_back(wires_[gate.in[i]] + preproc->mask_R_tag[i]);
+            }
+        }
+        
+        // Batch all masked shares together for a single reconstruction call
+        std::vector<AuthAddShare> all_masked_shares;
+        std::vector<AuthAddShare> all_masked_tags;
+        std::vector<size_t> owner_offsets(nP_ + 1, 0);
+        std::vector<size_t> owner_sizes(nP_ + 1, 0);
+        
+        for (int owner = 1; owner <= nP_; ++owner) {
+            owner_offsets[owner] = all_masked_shares.size();
+            owner_sizes[owner] = masked_shares_by_owner[owner].size();
+            all_masked_shares.insert(all_masked_shares.end(), 
+                                     masked_shares_by_owner[owner].begin(), 
+                                     masked_shares_by_owner[owner].end());
+            all_masked_tags.insert(all_masked_tags.end(),
+                                   masked_tags_by_owner[owner].begin(),
+                                   masked_tags_by_owner[owner].end());
+        }
+        
+        // Single reconstruction call for all shares
+        std::vector<Field> all_reconstructed;
+        std::vector<Field> all_reconstructed_tags;
+        if (!all_masked_shares.empty()) {
+            reconstruct(nP_, id_, network_, all_masked_shares, all_reconstructed, check, use_pking_, latency_, &all_masked_tags, &all_reconstructed_tags);
+        }
+        
+        // Split reconstructed values back by owner
+        std::vector<std::vector<Field>> Tprime_by_owner(nP_ + 1);
+        std::vector<std::vector<Field>> Tprime_tags_by_owner(nP_ + 1);
+        for (int owner = 1; owner <= nP_; ++owner) {
+            if (owner_sizes[owner] > 0) {
+                Tprime_by_owner[owner].assign(all_reconstructed.begin() + owner_offsets[owner],
+                                              all_reconstructed.begin() + owner_offsets[owner] + owner_sizes[owner]);
+                Tprime_tags_by_owner[owner].assign(all_reconstructed_tags.begin() + owner_offsets[owner],
+                                                   all_reconstructed_tags.begin() + owner_offsets[owner] + owner_sizes[owner]);
+            }
+        }
+        
+        // Compute outputs for each gate
+        for (int owner = 1; owner <= nP_; ++owner) {
+            for (size_t idx = 0; idx < gate_indices_by_owner[owner].size(); ++idx) {
+                size_t gidx = gate_indices_by_owner[owner][idx];
+                const auto &gate = cPermAndSh_gates[gidx];
+                auto *preproc = static_cast<PreprocCPermAndShGate*>(preproc_.gates[gate.out].get());
+                size_t vec_size = gate_vec_sizes[gidx];
+                size_t offset = gate_offsets_by_owner[owner][idx];
+                const std::vector<int> &owner_pi = gate.permutation[0];
+                
+                if (id_ == owner) {
+                    // Owner computes π(T') - π(R) - sub_from_output for their permutation
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        int idx_perm = owner_pi[i];
+                        wires_[gate.outs[i]].pushValue(Tprime_by_owner[owner][offset + idx_perm] - preproc->permuted_mask[i].valueAt() - wires_[gate.in[2 * vec_size + i]].valueAt());
+                        wires_[gate.outs[i]].pushTag(Tprime_tags_by_owner[owner][offset + idx_perm] - preproc->permuted_mask_tag[i].tagAt());
+                    }
+                } else {
+                    // Non-owners compute -π_i(R) - sub_from_output
+                    for (size_t i = 0; i < vec_size; ++i) {
+                        wires_[gate.outs[i]].pushValue(-preproc->permuted_mask[i].valueAt() - wires_[gate.in[2 * vec_size + i]].valueAt());
+                        wires_[gate.outs[i]].pushTag(-preproc->permuted_mask_tag[i].tagAt());
+                    }
+                }
+            }
+        }
+    }
+
     void OnlineEvaluator::amortzdPnSEvaluate(const std::vector<common::utils::SIMDOGate> &amortzdPnS_gates) {
         if (id_ == 0 || amortzdPnS_gates.empty()) { return; }
 
@@ -678,9 +774,9 @@ namespace graphdb
             size_t vec_size = preproc->vec_size;
             vec_sizes.push_back(vec_size);
             gates_order.push_back(&gate);
-            for (size_t i = 0; i < vec_size; ++i) {
-                all_masked_shares.push_back(wires_[gate.in[i]]); // + preproc->mask_R[i]);
-                all_masked_shares_tags.push_back(wires_[gate.in[i]]); // + preproc->mask_R_tag[i]);
+            for (size_t i = 0; i < vec_size; i++) {
+                all_masked_shares.push_back(wires_[gate.in[i]] + preproc->mask_R[i]);
+                all_masked_shares_tags.push_back(wires_[gate.in[i]] + preproc->mask_R_tag[i]);
             }
         }
 
@@ -706,16 +802,94 @@ namespace graphdb
             for (size_t party_idx = 0; party_idx < nP; party_idx++) {
                 if (party_idx + 1 == id_) {
                     const std::vector<int>& my_permutation = gate->permutation[party_idx];
-                    for (size_t j = 0; j < vec_size; ++j) {
+                    for (size_t j = 0; j < vec_size; j++) {
                         int idx_perm = my_permutation[j];
                         wires_[gate->outs[out_idx]].pushValue(all_reconstructed[offset + idx_perm] - preproc->permuted_masks[party_idx][j].valueAt());
                         wires_[gate->outs[out_idx]].pushTag(all_reconstructed_tags[offset + idx_perm] - preproc->permuted_masks_tag[party_idx][j].tagAt());
                         out_idx++;
                     }
                 } else {
+                    for (size_t j = 0; j < vec_size; j++) {
+                        wires_[gate->outs[out_idx]].pushValue(-preproc->permuted_masks[party_idx][j].valueAt());
+                        wires_[gate->outs[out_idx]].pushTag(-preproc->permuted_masks_tag[party_idx][j].tagAt());
+                        out_idx++;
+                    }
+                }
+            }
+
+            offset += vec_size;
+        }
+    }
+
+    void OnlineEvaluator::cAmortzdPnSEvaluate(const std::vector<common::utils::SIMDOGate> &cAmortzdPnS_gates) {
+        if (id_ == 0 || cAmortzdPnS_gates.empty()) { return; }
+
+        // Batch mask-and-reconstruct across all cAmortzdPnS gates.
+        // cAmortzdPnS: input = [input..., commitment..., perm_comm0..., perm_comm1..., ..., perm_commN-1...]
+        // Logic: mask (input + commitment) and reconstruct
+        std::vector<AuthAddShare> all_masked_shares;
+        std::vector<AuthAddShare> all_masked_shares_tags;
+        std::vector<size_t> vec_sizes;
+        std::vector<const common::utils::SIMDOGate*> gates_order;
+
+        for (const auto &gate : cAmortzdPnS_gates) {
+            auto *preproc = static_cast<PreprocCAmortzdPnSGate *>(preproc_.gates[gate.outs[0]].get());
+            size_t vec_size = preproc->vec_size;
+            vec_sizes.push_back(vec_size);
+            gates_order.push_back(&gate);
+            
+            // Add commitment to input: (input[i] + commitment[i]) + mask_R[i]
+            // Input layout: [input..., commitment..., perm_comm0..., perm_comm1..., ...]
+            // Note: tags only include input, not commitment (following cPermAndSh pattern)
+            for (size_t i = 0; i < vec_size; ++i) {
+                all_masked_shares.push_back(wires_[gate.in[i]] + wires_[gate.in[vec_size + i]]);
+                all_masked_shares_tags.push_back(wires_[gate.in[i]]);
+            }
+        }
+
+        if (all_masked_shares.empty()) { return; }
+
+        std::vector<Field> all_reconstructed;
+        std::vector<Field> all_reconstructed_tags;
+        
+        reconstruct(nP_, id_, network_, all_masked_shares, all_reconstructed, check, use_pking_, latency_, &all_masked_shares_tags, &all_reconstructed_tags);
+
+        // Now split and compute outputs per gate. For each cAmortzdPnS gate, produce nP * vec_size outputs (flattened).
+        // Output: pi(input + commitment) - permuted_commitment_i for party i
+        size_t offset = 0;
+        for (size_t gidx = 0; gidx < cAmortzdPnS_gates.size(); ++gidx) {
+            const auto *gate = gates_order[gidx];
+            auto *preproc = static_cast<PreprocCAmortzdPnSGate *>(preproc_.gates[gate->outs[0]].get());
+            size_t vec_size = vec_sizes[gidx];
+            size_t nP = preproc->nP;
+
+            // T' for this gate is all_reconstructed[offset ... offset+vec_size-1]
+            // Fill outputs in flattened order: for party 0..nP-1, each has vec_size outputs
+            size_t out_idx = 0;
+            for (size_t party_idx = 0; party_idx < nP; party_idx++) {
+                if (party_idx + 1 == id_) {
+                    const std::vector<int>& my_permutation = gate->permutation[party_idx];
                     for (size_t j = 0; j < vec_size; ++j) {
-                        wires_[gate->outs[out_idx]].pushValue(Field(0) - preproc->permuted_masks[party_idx][j].valueAt());
-                        wires_[gate->outs[out_idx]].pushTag(Field(0) - preproc->permuted_masks_tag[party_idx][j].tagAt());
+                        int idx_perm = my_permutation[j];
+                        // Output = pi(T') - pi(R) - permuted_commitment[party_idx][j]
+                        // permuted_commitment is at gate.in[2*vec_size + party_idx*vec_size + j]
+                        size_t perm_comm_idx = (2 + party_idx) * vec_size + j;
+                        wires_[gate->outs[out_idx]].pushValue(all_reconstructed[offset + idx_perm] 
+                                                               - preproc->permuted_masks[party_idx][j].valueAt()
+                                                               - wires_[gate->in[perm_comm_idx]].valueAt());
+                        wires_[gate->outs[out_idx]].pushTag(all_reconstructed_tags[offset + idx_perm] 
+                                                             - preproc->permuted_masks_tag[party_idx][j].tagAt());
+                        out_idx++;
+                    }
+                } else {
+                    for (size_t j = 0; j < vec_size; ++j) {
+                        // Output = -pi(R) - permuted_commitment[party_idx][j]
+                        size_t perm_comm_idx = (2 + party_idx) * vec_size + j;
+                        wires_[gate->outs[out_idx]].pushValue(Field(0) 
+                                                               - preproc->permuted_masks[party_idx][j].valueAt()
+                                                               - wires_[gate->in[perm_comm_idx]].valueAt());
+                        wires_[gate->outs[out_idx]].pushTag(Field(0) 
+                                                             - preproc->permuted_masks_tag[party_idx][j].tagAt());
                         out_idx++;
                     }
                 }
@@ -733,7 +907,9 @@ namespace graphdb
         std::vector<common::utils::FIn1Gate> rec_gates;
         // std::vector<common::utils::SIMDOGate> shuffle_gates;
         std::vector<common::utils::SIMDOGate> permAndSh_gates;
+        std::vector<common::utils::SIMDOGate> cPermAndSh_gates;
         std::vector<common::utils::SIMDOGate> amortzdPnS_gates;
+        std::vector<common::utils::SIMDOGate> cAmortzdPnS_gates;
         std::vector<common::utils::SIMDOGate> rewire_gates;
 
         // First pass: collect the multi-round gates so their batched handlers can run once.
@@ -766,9 +942,21 @@ namespace graphdb
                     break;
                 }
 
+                case common::utils::GateType::kCPermAndSh: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    cPermAndSh_gates.push_back(*g);
+                    break;
+                }
+
                 case common::utils::GateType::kAmortzdPnS: {
                     auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
                     amortzdPnS_gates.push_back(*g);
+                    break;
+                }
+
+                case common::utils::GateType::kCAmortzdPnS: {
+                    auto *g = static_cast<common::utils::SIMDOGate *>(gate.get());
+                    cAmortzdPnS_gates.push_back(*g);
                     break;
                 }
 
@@ -789,7 +977,9 @@ namespace graphdb
         if (!rec_gates.empty()) { recEvaluate(rec_gates); }
         // if (!shuffle_gates.empty()) {  }
         if (!permAndSh_gates.empty()) { permAndShEvaluate(permAndSh_gates); }
+        if (!cPermAndSh_gates.empty()) { cPermAndShEvaluate(cPermAndSh_gates); }
         if (!amortzdPnS_gates.empty()) { amortzdPnSEvaluate(amortzdPnS_gates); }
+        if (!cAmortzdPnS_gates.empty()) { cAmortzdPnSEvaluate(cAmortzdPnS_gates); }
         if (!rewire_gates.empty()) { rewireEvaluate(rewire_gates); }
         
         // Second pass: handle locally evaluable gates.

@@ -92,6 +92,28 @@ struct PreprocPermAndShGate : public PreprocGate {
 };
 
 
+struct PreprocCPermAndShGate : public PreprocGate {
+  // Mask R and its shares
+  std::vector<AuthAddShare> mask_R;      // This party's additive shares of R
+  std::vector<AuthAddShare> mask_R_tag;      // This party's additive shares of R for tag
+
+  // Permuted mask π_owner(R) (only one permutation per gate - the owner's)
+  std::vector<AuthAddShare> permuted_mask;      // This party's additive shares of π_owner(R)
+  std::vector<AuthAddShare> permuted_mask_tag;      // This party's additive shares of π_owner(R_tag)
+
+  size_t vec_size; // Size of input vector
+  int owner;       // Owner party id for this corrected permute-and-share gate
+
+  PreprocCPermAndShGate() = default;
+  PreprocCPermAndShGate(const std::vector<AuthAddShare>& mask_R,
+                        const std::vector<AuthAddShare>& permuted_mask,
+                        const std::vector<AuthAddShare>& mask_R_tag,
+                        const std::vector<AuthAddShare>& permuted_mask_tag,
+                        size_t vec_size, int owner)
+      : PreprocGate(), mask_R(mask_R), permuted_mask(permuted_mask), mask_R_tag(mask_R_tag), permuted_mask_tag(permuted_mask_tag), vec_size(vec_size), owner(owner) {}
+};
+
+
 struct PreprocAmortzdPnSGate : public PreprocGate {
   // Shares of random mask R (size = vec_size)
   std::vector<AuthAddShare> mask_R;      // This party's additive shares of R
@@ -111,6 +133,30 @@ struct PreprocAmortzdPnSGate : public PreprocGate {
                         const std::vector<AuthAddShare>& mask_R_tag,
                         const std::vector<std::vector<AuthAddShare>>& permuted_masks_tag,
                         size_t vec_size, size_t nP)
+      : PreprocGate(), mask_R(mask_R), permuted_masks(permuted_masks), 
+        mask_R_tag(mask_R_tag), permuted_masks_tag(permuted_masks_tag),
+        vec_size(vec_size), nP(nP) {}
+};
+
+struct PreprocCAmortzdPnSGate : public PreprocGate {
+  // Shares of random mask R (size = vec_size)
+  std::vector<AuthAddShare> mask_R;      // This party's additive shares of R
+  std::vector<AuthAddShare> mask_R_tag;      // This party's additive shares of R
+  
+  // Shares of permuted masks π_i(R) for each party i (size = nP x vec_size)
+  // permuted_masks[i] contains shares of π_i(R)
+  std::vector<std::vector<AuthAddShare>> permuted_masks;      // This party's additive shares of π_i(R)
+  std::vector<std::vector<AuthAddShare>> permuted_masks_tag;      // This party's additive shares of π_i(R)
+  
+  size_t vec_size;  // Size of input vector
+  size_t nP;        // Number of parties
+  
+  PreprocCAmortzdPnSGate() = default;
+  PreprocCAmortzdPnSGate(const std::vector<AuthAddShare>& mask_R,
+                         const std::vector<std::vector<AuthAddShare>>& permuted_masks,
+                         const std::vector<AuthAddShare>& mask_R_tag,
+                         const std::vector<std::vector<AuthAddShare>>& permuted_masks_tag,
+                         size_t vec_size, size_t nP)
       : PreprocGate(), mask_R(mask_R), permuted_masks(permuted_masks), 
         mask_R_tag(mask_R_tag), permuted_masks_tag(permuted_masks_tag),
         vec_size(vec_size), nP(nP) {}

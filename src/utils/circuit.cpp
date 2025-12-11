@@ -75,12 +75,20 @@ std::ostream& operator<<(std::ostream& os, GateType type) {
       os << "Permute and Share";
       break;
 
+    case kCPermAndSh:
+      os << "Commited Permute and Share";
+      break;
+
     case kPublicPerm:
       os << "Public Permutation";
       break;
 
     case kAmortzdPnS:
       os << "Amortized Permute and Share";
+      break;
+
+    case kCAmortzdPnS:
+      os << "Committed Amortized Permute and Share";
       break;
 
     case kRewire:

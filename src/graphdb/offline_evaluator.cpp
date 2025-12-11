@@ -334,6 +334,33 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
           break;
         }
 
+        case common::utils::GateType::kCPermAndSh: {
+          // Same logic as kPermAndSh: generate mask R and permuted mask π_owner(R)
+          auto *cPermAndSh_g = static_cast<common::utils::SIMDOGate *>(gate.get());
+          auto vec_size = cPermAndSh_g->vec_size;  // Use metadata stored in gate
+
+          std::vector<AuthAddShare> mask_R(vec_size);
+          std::vector<AuthAddShare> mask_R_tag(vec_size);
+          
+          for (size_t i = 0; i < vec_size; ++i) {
+            randomShare(nP_, id_, rgen_, mask_R[i], rand_sh_sec, idx_rand_sh_sec);
+            randomShare(nP_, id_, rgen_, mask_R_tag[i], rand_sh_sec, idx_rand_sh_sec);
+          }
+
+          // Generate permuted mask π_owner(R) via helper using randomShareSecret
+          std::vector<AuthAddShare> permuted_mask(vec_size);
+          std::vector<AuthAddShare> permuted_mask_tag(vec_size);
+          // Owner permutation is available in the gate for all parties (including helper)
+          std::vector<int> owner_pi = cPermAndSh_g->permutation[0];
+
+          generatePermAndShPermutedMask(nP_, id_, rgen_, mask_R, permuted_mask, mask_R_tag, permuted_mask_tag,
+                                        owner_pi, vec_size, gate->owner, rand_sh_sec, idx_rand_sh_sec);
+
+          preproc_.gates[gate->out] =
+              std::move(std::make_unique<PreprocCPermAndShGate>(mask_R, permuted_mask, mask_R_tag, permuted_mask_tag, vec_size, gate->owner));
+          break;
+        }
+
 
         case common::utils::GateType::kAmortzdPnS: {
           auto *amortzdPnS_g = static_cast<common::utils::SIMDOGate *>(gate.get());
@@ -359,6 +386,35 @@ void OfflineEvaluator::setWireMasksParty(const std::unordered_map<common::utils:
                                           rand_sh_sec, idx_rand_sh_sec);
           
           preproc_.gates[gate->outs[0]] = std::move(std::make_unique<PreprocAmortzdPnSGate>(mask_R, permuted_masks, 
+                                                                mask_R_tag, permuted_masks_tag, 
+                                                                vec_size, nP_));
+          break;
+        }
+
+        case common::utils::GateType::kCAmortzdPnS: {
+          auto *cAmortzdPnS_g = static_cast<common::utils::SIMDOGate *>(gate.get());
+          auto vec_size = cAmortzdPnS_g->vec_size;  // Use metadata stored in gate
+          
+          // Generate random mask R and its shares (same as kAmortzdPnS)
+          std::vector<AuthAddShare> mask_R(vec_size);
+          std::vector<AuthAddShare> mask_R_tag(vec_size);
+
+          for (size_t i = 0; i < vec_size; i++) {
+            randomShare(nP_, id_, rgen_, mask_R[i], rand_sh_sec, idx_rand_sh_sec);
+            randomShare(nP_, id_, rgen_, mask_R_tag[i], rand_sh_sec, idx_rand_sh_sec);
+          }
+          
+          // Generate shares of permuted masks π_i(R) for each party i
+          std::vector<std::vector<AuthAddShare>> permuted_masks(nP_, std::vector<AuthAddShare>(vec_size));
+          std::vector<std::vector<AuthAddShare>> permuted_masks_tag(nP_, std::vector<AuthAddShare>(vec_size));
+          
+          // HP computes π_i(R) for each party i and shares them using randomShareSecret
+          generateAmortzdPnSPermutedMasks(nP_, id_, rgen_, mask_R, permuted_masks,
+                                          mask_R_tag, permuted_masks_tag,
+                                          cAmortzdPnS_g->permutation, vec_size,
+                                          rand_sh_sec, idx_rand_sh_sec);
+          
+          preproc_.gates[gate->outs[0]] = std::move(std::make_unique<PreprocCAmortzdPnSGate>(mask_R, permuted_masks, 
                                                                 mask_R_tag, permuted_masks_tag, 
                                                                 vec_size, nP_));
           break;
