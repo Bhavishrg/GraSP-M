@@ -133,8 +133,8 @@ void OfflineEvaluator::generatePermAndShPermutedMask(int nP, int pid, RandGenPoo
     std::vector<Field> permuted_R_tag(vec_size);
     for (size_t j = 0; j < vec_size; j++) {
       int idx_perm = owner_pi[j];
-      permuted_R[idx_perm] = mask_R[j].valueAt();
-      permuted_R_tag[idx_perm] = mask_R_tag[j].valueAt();
+      permuted_R[j] = mask_R[idx_perm].valueAt();
+      permuted_R_tag[j] = mask_R_tag[idx_perm].valueAt();
     }
 
     // Share π_owner(R) using randomShareSecret
@@ -156,10 +156,10 @@ void OfflineEvaluator::generatePermAndShPermutedMask(int nP, int pid, RandGenPoo
 // HP: Reconstructs R, computes π_i(R) for each party, then uses randomShareSecret to share each π_i(R)
 // Computing parties: Receive their shares via randomShareSecret
 void OfflineEvaluator::generateAmortzdPnSPermutedMasks(int nP, int pid, RandGenPool& rgen,
-                                                        std::vector<AuthAddShare> mask_R,
-                                                        std::vector<std::vector<AuthAddShare>> permuted_masks,
-                                                        std::vector<AuthAddShare> mask_R_tag,
-                                                        std::vector<std::vector<AuthAddShare>> permuted_masks_tag,
+                                                        std::vector<AuthAddShare>& mask_R,
+                                                        std::vector<std::vector<AuthAddShare>>& permuted_masks,
+                                                        std::vector<AuthAddShare>& mask_R_tag,
+                                                        std::vector<std::vector<AuthAddShare>>& permuted_masks_tag,
                                                         std::vector<std::vector<int>>& all_permutations,
                                                         size_t vec_size,
                                                         std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec) {
@@ -173,8 +173,8 @@ void OfflineEvaluator::generateAmortzdPnSPermutedMasks(int nP, int pid, RandGenP
       // Compute π_i(R)
       for (size_t j = 0; j < vec_size; j++) {
         int idx_perm = pi_i[j];
-        permuted_R[idx_perm] = mask_R[j].valueAt();
-        permuted_R_tag[idx_perm] = mask_R_tag[j].valueAt();
+        permuted_R[j] = mask_R[idx_perm].valueAt();
+        permuted_R_tag[j] = mask_R_tag[idx_perm].valueAt();
       }
 
       // Share π_i(R) using randomShareSecret

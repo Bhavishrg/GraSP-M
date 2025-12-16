@@ -63,10 +63,10 @@ class OfflineEvaluator {
 
   
   static void generateAmortzdPnSPermutedMasks(int nP, int pid, RandGenPool& rgen,
-                                              std::vector<AuthAddShare> mask_R,
-                                              std::vector<std::vector<AuthAddShare>> permuted_masks,
-                                              std::vector<AuthAddShare> mask_R_tag,
-                                              std::vector<std::vector<AuthAddShare>> permuted_masks_tag,
+                                              std::vector<AuthAddShare>& mask_R,
+                                              std::vector<std::vector<AuthAddShare>>& permuted_masks,
+                                              std::vector<AuthAddShare>& mask_R_tag,
+                                              std::vector<std::vector<AuthAddShare>>& permuted_masks_tag,
                                               std::vector<std::vector<int>>& all_permutations,
                                               size_t vec_size,
                                               std::vector<Field>& rand_sh_sec, size_t& idx_rand_sh_sec);

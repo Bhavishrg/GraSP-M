@@ -842,8 +842,8 @@ namespace graphdb
             // Input layout: [input..., commitment..., perm_comm0..., perm_comm1..., ...]
             // Note: tags only include input, not commitment (following cPermAndSh pattern)
             for (size_t i = 0; i < vec_size; ++i) {
-                all_masked_shares.push_back(wires_[gate.in[i]] + wires_[gate.in[vec_size + i]]);
-                all_masked_shares_tags.push_back(wires_[gate.in[i]]);
+                all_masked_shares.push_back(wires_[gate.in[i]] + wires_[gate.in[vec_size + i]] + preproc->mask_R[i]);
+                all_masked_shares_tags.push_back(wires_[gate.in[i]] + preproc->mask_R_tag[i]);
             }
         }
 
